@@ -1893,6 +1893,13 @@ button.personal-execution-chip:focus-visible { outline: 2px solid #0070f3; outli
 .personal-goal-acceptance .personal-acceptance-observation { border-top: 1px solid var(--color-border, #ebebeb); padding: 8px 0; }
 .personal-goal-acceptance dd, .personal-goal-acceptance p { overflow-wrap: anywhere; }
 .personal-goal-acceptance details { margin-top: 16px; }
+.personal-worker-runs .personal-worker-run { border-top: 1px solid var(--pw-line); padding: 8px 0; }
+.personal-worker-runs .personal-worker-run small { color: var(--pw-faint); }
+.personal-worker-runs .personal-worker-run p { margin: 0 0 4px; overflow-wrap: anywhere; }
+.personal-worker-runs .personal-worker-run dl { display: grid; gap: 4px; margin: 0; }
+.personal-worker-runs .personal-worker-run dl > div { display: flex; gap: 8px; }
+.personal-worker-runs .personal-worker-run dt { min-width: 84px; color: var(--pw-muted); font-size: 11px; }
+.personal-worker-runs .personal-worker-run dd { margin: 0; overflow-wrap: anywhere; }
 
 .personal-channel-scroll[data-active-goal-view="overview"] { padding-inline: max(24px, calc((100% - 1120px) / 2)); }
 

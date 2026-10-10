@@ -1,6 +1,7 @@
 import { ArrowRight, Info } from "lucide-react";
 import { DeliveryReview } from "./delivery-review";
 import { GoalAcceptanceObservationCard } from "./goal-acceptance-observation-card";
+import { WorkerRunsCard } from "./worker-runs-card";
 import { formatCostUsd, formatDurationMs, formatTokenCount, formatUsageValue, type WorkspaceDrawerSelection, type WorkspaceGoal, type WorkspaceGoalTab, type WorkspaceModel, type WorkspaceTimelineItem } from "./personal-workspace-model";
 import { localizedGoalState, useWorkspaceI18n } from "./i18n";
 import "./goal-overview.css";
@@ -43,6 +44,7 @@ export function GoalOverview({ active, goal, items, userTodos, readOnly, onOpenD
         <div><dt>{t("drawer.durationShort")}</dt><dd>{formatUsageValue(goal.usage?.durationMs24h, t("drawer.usageNotMeasured"), formatDurationMs)}</dd></div>
       </dl>
     </section>
+    <WorkerRunsCard goalId={goal.goalId} />
     {readOnly ? <><p className="goal-overview-source-note">{copy.remote}</p><GoalAcceptanceObservationCard goal={goal} /></>
       : <DeliveryReview active={active} goal={goal} items={items} userTodos={userTodos} onSelect={onSelect} />}
   </section>;
