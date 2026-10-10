@@ -26,8 +26,11 @@ a typed reason rather than a guess.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import signal
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,27 +80,66 @@ def _loopx_bin() -> str:
 
 
 def _run_cli(
-    argv: list[str], *, cwd: Path, timeout: float
+    argv: list[str], *, cwd: Path, timeout: float, cancel: Any = None
 ) -> tuple[int, str, str]:
+    """Run one ``loopx`` command, terminating its process group on cancel."""
+
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
             argv,
             cwd=str(cwd),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise LoopError(f"loopx command timed out: {argv[1:3]}") from exc
     except FileNotFoundError as exc:
         raise LoopError("the loopx CLI is not available on PATH") from exc
-    return completed.returncode, completed.stdout, completed.stderr
+
+    deadline = time.monotonic() + timeout
+    while True:
+        if _is_cancelled(cancel):
+            _terminate_group(process)
+            raise LoopError("the loop was cancelled while a command was running")
+        try:
+            out, err = process.communicate(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            if time.monotonic() > deadline:
+                _terminate_group(process)
+                raise LoopError(f"loopx command timed out: {argv[1:3]}")
+            continue
+        return process.returncode, out or "", err or ""
+
+
+def _is_cancelled(cancel: Any) -> bool:
+    return cancel is not None and bool(getattr(cancel, "is_set", lambda: False)())
+
+
+def _terminate_group(process: "subprocess.Popen[str]") -> None:
+    """Terminate the whole process group so no host is left running."""
+
+    try:
+        group = os.getpgid(process.pid)
+    except (ProcessLookupError, OSError):
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(group, sig)
+        except (ProcessLookupError, OSError):
+            return
+        try:
+            process.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _run_json(
-    argv: list[str], *, cwd: Path, timeout: float
+    argv: list[str], *, cwd: Path, timeout: float, cancel: Any = None
 ) -> dict[str, Any]:
-    code, out, err = _run_cli(argv, cwd=cwd, timeout=timeout)
+    if _is_cancelled(cancel):
+        raise LoopError("the loop was cancelled before the command started")
+    code, out, err = _run_cli(argv, cwd=cwd, timeout=timeout, cancel=cancel)
     text = (out or "").strip()
     if not text:
         raise LoopError(f"loopx returned no output (exit {code}): {err.strip()[:200]}")
@@ -171,15 +213,55 @@ class LoopOutcome:
     turns: list[TurnRecord]
     stop_reason: str
     stop_detail: str
+    #: Types the stop so AC-10 is assertable directly instead of inferred:
+    #: paused | gate | quota | no_work | turn_failed | cancelled | dry_run |
+    #: max_turns | not_admitted.
+    stop_kind: str = "unknown"
+    #: How many Turns actually reached the host. A stop that never launches the
+    #: host must report zero here -- that is exactly the AC-10 claim.
+    host_invocations: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "schema_version": LOOP_SCHEMA_VERSION,
             "turn_count": len(self.turns),
+            "host_invocations": self.host_invocations,
             "turns": [turn.as_dict() for turn in self.turns],
+            "stop_kind": self.stop_kind,
             "stop_reason": self.stop_reason,
             "stop_detail": self.stop_detail,
         }
+
+
+#: LoopX refusal state -> loop stop kind, as recorded by ``quota should-run``.
+_STOP_KIND_BY_STATE = {
+    "paused": "paused",
+    "user_gate": "gate",
+    "blocked": "gate",
+    "quota_exhausted": "quota",
+    "exhausted": "quota",
+    "budget_exhausted": "quota",
+}
+
+
+def classify_stop_kind(state: str, detail: str) -> str:
+    """Classify a refusal into the typed stop kind the loop reports.
+
+    LoopX owns the vocabulary; this only groups it so a caller (and the AC-10
+    test) can assert "paused", "gate" or "quota" without string matching.
+    """
+
+    token = str(state or "").strip().lower()
+    if token in _STOP_KIND_BY_STATE:
+        return _STOP_KIND_BY_STATE[token]
+    text = str(detail or "").lower()
+    if "paused" in text or "stopped by owner" in text:
+        return "paused"
+    if "gate" in text:
+        return "gate"
+    if "quota" in text or "budget" in text:
+        return "quota"
+    return "not_admitted"
 
 
 def _eligible_todo_ids(should_run: dict[str, Any]) -> list[str]:
@@ -230,8 +312,14 @@ def run_host_loop(
     lease_key_prefix: str = "host-loop-lease",
     lease_version: int = 1,
     dry_run: bool = False,
+    cancel: Any = None,
 ) -> LoopOutcome:
-    """Drive governed Turns until LoopX refuses to admit another one."""
+    """Drive governed Turns until LoopX refuses to admit another one.
+
+    ``cancel`` is any object with ``is_set()`` (a ``threading.Event``). A set
+    flag stops the loop before the next Turn is asked for and terminates an
+    in-flight ``loopx`` call, so an owner stop never leaves a host running.
+    """
 
     project = project.expanduser().resolve()
     dsh_runner = dsh_runner.expanduser().resolve()
@@ -240,8 +328,13 @@ def run_host_loop(
         base += ["--registry", str(registry_path)]
 
     turns: list[TurnRecord] = []
+    host_invocations = 0
     stop_reason = "max_turns_reached"
     stop_detail = f"loop stopped after {max_turns} turns"
+    stop_kind = "max_turns"
+
+    def _cancelled() -> bool:
+        return _is_cancelled(cancel)
 
     def _validation_for(todo: str) -> list[str] | None:
         """Each Todo owns its own completion validation, never a shared guess."""
@@ -253,6 +346,11 @@ def run_host_loop(
         return list(validation_argv) if validation_argv else None
 
     for _ in range(max(1, max_turns)):
+        if _cancelled():
+            stop_kind = "cancelled"
+            stop_reason = "cancelled"
+            stop_detail = "the loop was cancelled before asking LoopX for more work"
+            break
         # 1. Ask LoopX whether any work is admitted at all.
         should_run = _run_json(
             base
@@ -274,12 +372,14 @@ def run_host_loop(
                 should_run.get("state") or should_run.get("decision") or "not_admitted"
             )
             stop_detail = str(should_run.get("reason") or "LoopX did not admit a Turn")
+            stop_kind = classify_stop_kind(stop_reason, stop_detail)
             break
 
         candidates = _eligible_todo_ids(should_run)
         if not candidates:
             stop_reason = "no_eligible_todo"
             stop_detail = "LoopX admitted a Turn but published no eligible Todo"
+            stop_kind = "no_work"
             break
         todo_id = candidates[0]
 
@@ -311,6 +411,7 @@ def run_host_loop(
             stop_detail = str(
                 bound.get("reason") or "LoopX refused the selected Todo"
             )
+            stop_kind = classify_stop_kind(stop_reason, stop_detail)
             break
 
         if dry_run:
@@ -328,6 +429,7 @@ def run_host_loop(
             )
             stop_reason = "dry_run"
             stop_detail = "dry run stopped before invoking the host"
+            stop_kind = "dry_run"
             break
 
         # 3. Execute exactly one governed Turn. LoopX invokes the host, runs the
@@ -364,7 +466,10 @@ def run_host_loop(
             ]
         turn_argv.append("--execute")
 
-        report = _run_json(turn_argv, cwd=project, timeout=timeout_seconds + 300)
+        host_invocations += 1
+        report = _run_json(
+            turn_argv, cwd=project, timeout=timeout_seconds + 300, cancel=cancel
+        )
         record = _parse_turn_report(report)
 
         # 4. Settlement fence. A Turn whose host already ran must never be
@@ -397,11 +502,16 @@ def run_host_loop(
             stop_detail = record.stop_reason or (
                 f"Turn ended as {record.result_kind} without a committed settlement"
             )
+            stop_kind = "turn_failed"
             break
-    else:
-        return LoopOutcome(turns=turns, stop_reason=stop_reason, stop_detail=stop_detail)
 
-    return LoopOutcome(turns=turns, stop_reason=stop_reason, stop_detail=stop_detail)
+    return LoopOutcome(
+        turns=turns,
+        stop_reason=stop_reason,
+        stop_detail=stop_detail,
+        stop_kind=stop_kind,
+        host_invocations=host_invocations,
+    )
 
 
 def _settle_prepared_turn(
@@ -491,7 +601,11 @@ def _settle_prepared_turn(
     # Re-resolve the prepared effect from the recorded journal, never by
     # re-running the host.
     journal = _in_progress_turn_key(
-        goal_id=goal_id, registry_path=registry_path, project=project
+        goal_id=goal_id,
+        registry_path=registry_path,
+        project=project,
+        turn_instance_id=turn_instance_id,
+        todo_id=todo_id,
     )
     if journal is None:
         return None
@@ -602,26 +716,55 @@ def _in_progress_turn_key(
     goal_id: str,
     registry_path: Path | None,
     project: Path,
+    turn_instance_id: str | None = None,
+    todo_id: str | None = None,
 ) -> str | None:
-    """Find the not-yet-terminal Turn by reading the recorded Turn journal.
+    """Find the not-yet-terminal Turn that belongs to this exact Turn.
 
     Reading the journal is the documented way to settle a prepared effect: the
     PRD requires resolving an interrupted settlement through the *existing*
     Turn identity and log rather than by re-running a host that already had side
-    effects. The journal is a read-only artifact here; nothing is edited.
+    effects. The journal is read-only here; nothing is edited.
+
+    Identity is matched on the recorded ``plan.transaction.turn_instance_id``
+    (cross-checked against the Todo) so a stale non-terminal journal left by an
+    earlier attempt can never be mistaken for this Turn. An ambiguous match
+    returns ``None``: refusing to settle is safer than settling the wrong Turn.
     """
 
     turns_dir = _runtime_root_for(registry_path, project) / "goals" / goal_id / "turns"
     if not turns_dir.is_dir():
         return None
+
+    candidates: list[tuple[str, str, str | None]] = []
     for path in sorted(turns_dir.glob("*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if payload.get("status") == "in_progress" and payload.get("turn_key"):
-            return str(payload["turn_key"])
-    return None
+        if payload.get("status") != "in_progress":
+            continue
+        turn_key = str(payload.get("turn_key") or "")
+        if not turn_key:
+            continue
+        recorded_turn = str(_deep_get(payload, "turn_instance_id") or "")
+        recorded_todo = str(_deep_get(payload, "todo_id") or "")
+        candidates.append((turn_key, recorded_turn, recorded_todo or None))
+
+    if not candidates:
+        return None
+
+    if turn_instance_id is not None:
+        exact = [
+            key
+            for key, recorded_turn, recorded_todo in candidates
+            if recorded_turn == turn_instance_id
+            and (todo_id is None or recorded_todo is None or recorded_todo == todo_id)
+        ]
+        return exact[0] if len(exact) == 1 else None
+
+    # No identity supplied: only a single unambiguous candidate may be settled.
+    return candidates[0][0] if len(candidates) == 1 else None
 
 
 def main(argv: list[str] | None = None) -> int:

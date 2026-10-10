@@ -162,3 +162,214 @@ def test_ambiguous_successors_are_not_guessed(monkeypatch) -> None:
     )
 
     assert declaration == []
+
+
+# --------------------------------------------------------------------------
+# Stop classification and AC-10 accounting
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("paused", "paused"),
+        ("user_gate", "gate"),
+        ("blocked", "gate"),
+        ("quota_exhausted", "quota"),
+        ("exhausted", "quota"),
+        ("budget_exhausted", "quota"),
+        ("something_else", "not_admitted"),
+    ],
+)
+def test_stop_kinds_group_loopx_states(state: str, expected: str) -> None:
+    assert loop.classify_stop_kind(state, "") == expected
+
+
+def test_stop_kind_falls_back_to_the_reason_text() -> None:
+    assert loop.classify_stop_kind("", "goal is stopped by owner") == "paused"
+    assert loop.classify_stop_kind("", "waiting on a user_gate") == "gate"
+    assert loop.classify_stop_kind("", "quota exhausted for today") == "quota"
+
+
+def test_outcome_reports_host_invocations_and_stop_kind() -> None:
+    """AC-10 is asserted from these two fields, not from prose."""
+
+    payload = loop.LoopOutcome(
+        turns=[], stop_reason="paused", stop_detail="paused", stop_kind="paused",
+        host_invocations=0,
+    ).as_dict()
+
+    assert payload["host_invocations"] == 0
+    assert payload["stop_kind"] == "paused"
+
+
+def test_cancel_stops_before_any_host_invocation(monkeypatch) -> None:
+    """A pre-set cancel must not ask LoopX for work, let alone launch a host."""
+
+    import threading
+
+    called = {"n": 0}
+
+    def _boom(*_args, **_kwargs):
+        called["n"] += 1
+        raise AssertionError("the loop must not call the CLI when cancelled")
+
+    monkeypatch.setattr(loop, "_run_json", _boom)
+    cancel = threading.Event()
+    cancel.set()
+
+    outcome = loop.run_host_loop(
+        goal_id="g", agent_id="a", project=__import__("pathlib").Path("."),
+        dsh_runner=__import__("pathlib").Path("runner.py"),
+        cancel=cancel,
+    )
+
+    assert called["n"] == 0
+    assert outcome.stop_kind == "cancelled"
+    assert outcome.host_invocations == 0
+
+
+# --------------------------------------------------------------------------
+# Precise prepared-Turn identity (never settle the wrong journal)
+# --------------------------------------------------------------------------
+
+
+def _journal(tmp_path, *, goal: str, name: str, status: str, turn_instance_id: str, todo_id: str):
+    root = tmp_path / "runtime"
+    turns = root / "goals" / goal / "turns"
+    turns.mkdir(parents=True, exist_ok=True)
+    registry = tmp_path / "registry.json"
+    registry.write_text('{"common_runtime_root": %s}' % __import__("json").dumps(str(root)))
+    (turns / f"{name}.json").write_text(
+        __import__("json").dumps(
+            {
+                "turn_key": f"sha256:{name}",
+                "status": status,
+                "plan": {"transaction": {"turn_instance_id": turn_instance_id}},
+                "route": {"selected_todo": {"todo_id": todo_id}},
+            }
+        )
+    )
+    return registry
+
+
+def test_prepared_turn_is_matched_by_exact_identity(tmp_path) -> None:
+    registry = _journal(
+        tmp_path, goal="g", name="stale", status="in_progress",
+        turn_instance_id="turn-old", todo_id="todo_a",
+    )
+    _journal(
+        tmp_path, goal="g", name="current", status="in_progress",
+        turn_instance_id="turn-new", todo_id="todo_b",
+    )
+
+    resolved = loop._in_progress_turn_key(
+        goal_id="g", registry_path=registry, project=tmp_path,
+        turn_instance_id="turn-new", todo_id="todo_b",
+    )
+
+    assert resolved == "sha256:current"
+
+
+def test_unknown_identity_settles_nothing(tmp_path) -> None:
+    """A journal left by another attempt must never be settled for this Turn."""
+
+    registry = _journal(
+        tmp_path, goal="g", name="stale", status="in_progress",
+        turn_instance_id="turn-old", todo_id="todo_a",
+    )
+
+    assert (
+        loop._in_progress_turn_key(
+            goal_id="g", registry_path=registry, project=tmp_path,
+            turn_instance_id="turn-never-seen",
+        )
+        is None
+    )
+
+
+def test_ambiguous_candidates_without_identity_settle_nothing(tmp_path) -> None:
+    registry = _journal(
+        tmp_path, goal="g", name="one", status="in_progress",
+        turn_instance_id="turn-1", todo_id="todo_a",
+    )
+    _journal(
+        tmp_path, goal="g", name="two", status="in_progress",
+        turn_instance_id="turn-2", todo_id="todo_b",
+    )
+
+    assert (
+        loop._in_progress_turn_key(goal_id="g", registry_path=registry, project=tmp_path)
+        is None
+    )
+
+
+def test_terminal_journals_are_never_settled(tmp_path) -> None:
+    registry = _journal(
+        tmp_path, goal="g", name="done", status="committed",
+        turn_instance_id="turn-1", todo_id="todo_a",
+    )
+
+    assert (
+        loop._in_progress_turn_key(
+            goal_id="g", registry_path=registry, project=tmp_path, turn_instance_id="turn-1"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_kind"),
+    [
+        (
+            {"should_run": False, "decision": "skip", "state": "paused",
+             "reason": "goal is stopped by owner; automatic agent turns are paused"},
+            "paused",
+        ),
+        (
+            {"should_run": False, "decision": "skip", "state": "user_gate",
+             "reason": "an open user gate blocks delivery"},
+            "gate",
+        ),
+        (
+            {"should_run": False, "decision": "skip", "state": "quota_exhausted",
+             "reason": "the compute quota for this window is spent"},
+            "quota",
+        ),
+        (
+            {"should_run": False, "decision": "skip", "state": "exhausted",
+             "reason": "the compute quota for this window is spent"},
+            "quota",
+        ),
+    ],
+)
+def test_every_refusal_short_circuits_before_the_host(
+    monkeypatch, payload: dict, expected_kind: str
+) -> None:
+    """AC-10: a refusal must never reach the host, whatever its reason.
+
+    ``paused`` and ``gate`` are additionally proven end to end against a real
+    LoopX; this covers the whole refusal class, including a spent quota, without
+    fabricating a quota state on the live system.
+    """
+
+    calls = {"n": 0}
+
+    def _only_should_run(argv, **_kwargs):
+        calls["n"] += 1
+        assert "should-run" in argv, "a refusal must stop before any Turn is built"
+        return payload
+
+    monkeypatch.setattr(loop, "_run_json", _only_should_run)
+
+    outcome = loop.run_host_loop(
+        goal_id="g", agent_id="a", project=__import__("pathlib").Path("."),
+        dsh_runner=__import__("pathlib").Path("runner.py"),
+        max_turns=3,
+    )
+
+    assert outcome.host_invocations == 0
+    assert outcome.turns == []
+    assert outcome.stop_kind == expected_kind
+    # Exactly one guard call: the loop asked once and obeyed the answer.
+    assert calls["n"] == 1
