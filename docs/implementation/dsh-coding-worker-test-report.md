@@ -156,3 +156,77 @@ env -u DSH_HOME python3 -m pytest tests/test_dsh_goal_mode.py \
 # 3) 真实受控 Turn（需要已批准的真实模型调用）
 #    夹具与命令见 §3；LoopX 侧目标 dsh-coding-worker-phase1-goal
 ```
+
+---
+
+## 7. Phase 2：Worker 注册与 `goal.create` 双路线
+
+### 7.1 为什么必须是新的读模型（AD-01/AD-05 的实证）
+
+`loopx/chat_endpoints.py` 的自定义 Endpoint 注册面是**结构性受限**的，实测其校验：
+
+| 字段 | 允许值 | 后果 |
+|---|---|---|
+| `adapter_kind` | 只允许 `"acp"`（`chat_endpoints.py:111-112`） | DSH Coding Worker 不是 ACP agent，无法注册 |
+| `transport` | 只允许 `"stdio"` | — |
+| `trust_scope` | 只允许 `"read_only"`（`:120-121`） | **无法表达 workspace_write** |
+
+因此把 Coding Worker 塞进该注册表，只能靠放宽 `read_only` 保证——而那正是只读 Steward 赖以成立的东西。**结论：新增独立的 Governed Turn Worker Catalog，只读 Chat 路径一行不改。**
+
+### 7.2 交付
+
+| 文件 | 动作 |
+|---|---|
+| `loopx/control_plane/worker_catalog.py` | 新增：worker 描述符、workspace 授权、能力准入（`admit_worker`）、只读投影（含 `declaration_snapshot` 声明式快照） |
+| `loopx/chat_action_normalization.py` | `goal.create` 增加 `executor_route` / `worker_endpoint_id`；未知枚举拒绝；路由互斥校验 |
+| `loopx/chat_actions.py` | **三处** `_agent_eligibility` 调用点按路由分流（normalize、preview/eligibility、apply）；新增 `_admit_goal_worker` |
+| `loopx/bootstrap.py` | `build_goal_entry` / `bootstrap_project` 增加可选 `executor_route` / `worker_endpoint_id`，仅设置时写入 goal |
+| `loopx/chat_server.py` | `/api/chat/capabilities` 增加 `governed_turn_workers` 只读投影（声明式、不启动宿主、不泄漏路径） |
+
+**关键设计**：Coding Worker Goal 的 `agent_id` 保持为空，因此既有的「首轮 Chat Session」分支（`:777`）自然跳过——执行型 Worker 不经 `DshChatAdapter`，与 AD-01 一致。
+
+### 7.3 Gate P2 实测证据
+
+```
+$ loopx-canary bootstrap --project /tmp/loopx-dsh-coding-worker-p2 --goal-id p2-source-goal …
+- ok: True
+
+# 经 typed action preview/apply 创建 Coding Worker Goal
+preview status: preview_ready        errors: none      ← 无 tool_calls 报错
+apply status:   applied              outcome: goal_created
+GOAL executor_route:    governed_turn_worker
+GOAL worker_endpoint_id: dsh-coding-worker-local
+GOAL agent_id:          None
+
+# goal.create 同时建出 2 个 Todo
+count: 2
+ - todo_1f1c76989ef88f72327e81c7 | open | Add tests/test_hello.py …
+ - todo_e6286f4a473c6692a8f8868e | open | Add src/hello.py …
+```
+
+Worker 只读投影（Web 读取路径）：
+
+```json
+{"worker_endpoint_id":"dsh-coding-worker-local","worker_kind":"dsh_coding_worker",
+ "trust_scope":"workspace_write","tool_calls":true,"workspace_authorized":true,
+ "capabilities":{"shell":"probe_required", …},
+ "availability":{"ready":false,"reason":"not_probed"}}
+```
+
+**声明式快照不把「已配置」显示成「健康」**：能力一律 `probe_required`，`availability.reason="not_probed"`；权威判定由 `admit_worker` 在创建准入时以真实探测给出。投影经断言确认不包含任何本地绝对路径。
+
+### 7.4 测试
+
+```
+15 passed   tests/test_worker_catalog.py
+308 passed  聊天动作 / Gate 决策 / 团队计划 / Goal 生命周期 / chat CORS / DSH 三件套
+```
+
+覆盖：默认 Chat 路线行为不变；worker 路线**不触发** `cannot execute Goal tools`；未知 `executor_route` 拒绝；未注册 worker 拒绝；worker + `agent_id` 混用拒绝；**worker 不可用时不创建 Goal（fail closed）**；只读投影不泄漏路径。
+
+### 7.5 Phase 2 未完成项（如实标注）
+
+1. **Dashboard 表单**未改（`apps/presentation/dashboard/src/views/dashboard-page.tsx`）：后端路由已通，前端仍未暴露「执行器类型」选择器。这是 Gate P2「从 Web 创建」在 UI 层的最后一段。
+2. `loopx/chat_server.py` 的 capabilities 投影为**声明式**；把真实探测结果作为独立只读健康投影（FR-11/AC-15）留待 Phase 3。
+3. 首轮 Turn 的**异步下发**未接线：Goal + Todos 已创建，执行仍由 `loopx turn run-once` 显式驱动（Phase 1 已验证该路径）。
+

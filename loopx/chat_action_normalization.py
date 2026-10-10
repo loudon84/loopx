@@ -497,8 +497,42 @@ class ChatActionNormalizationMixin:
                     "stop_condition",
                     "initial_todos",
                     "native_token_budget",
+                    # Additive executor routing. Omitting both preserves the
+                    # historical Chat-agent behaviour exactly.
+                    "executor_route",
+                    "worker_endpoint_id",
                 },
             )
+            from .control_plane.worker_catalog import (
+                EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
+                TRUST_SCOPE_WORKSPACE_WRITE,
+                normalize_executor_route,
+                resolve_worker,
+            )
+
+            executor_route = normalize_executor_route(values.get("executor_route"))
+            worker_endpoint_id = None
+            if executor_route == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER:
+                worker_endpoint_id = _opaque(
+                    values.get("worker_endpoint_id"), field="worker_endpoint_id"
+                )
+                descriptor = resolve_worker(worker_endpoint_id)
+                # Registration and declaration are checked here so a preview
+                # fails fast and without spawning a host process. The live
+                # availability probe belongs to admission, where the Goal's
+                # workspace is already resolved.
+                if descriptor is None:
+                    raise ValueError(
+                        "selected Coding Worker endpoint is not registered"
+                    )
+                if (
+                    descriptor.trust_scope != TRUST_SCOPE_WORKSPACE_WRITE
+                    or not descriptor.tool_calls
+                ):
+                    raise ValueError(
+                        "selected Coding Worker does not declare a workspace-write "
+                        "tool capability"
+                    )
             goal_id = _opaque(values.get("goal_id"), field="goal_id")
             if any(
                 str(goal.get("id") or "") == goal_id
@@ -508,7 +542,10 @@ class ChatActionNormalizationMixin:
             result: dict[str, Any] = {
                 "goal_id": goal_id,
                 "title": _text(values.get("title"), field="title", limit=200),
+                "executor_route": executor_route,
             }
+            if worker_endpoint_id is not None:
+                result["worker_endpoint_id"] = worker_endpoint_id
             if values.get("native_token_budget") is not None:
                 budget = values["native_token_budget"]
                 if type(budget) is not int or not 1 <= budget <= 999_999_999:
@@ -529,6 +566,12 @@ class ChatActionNormalizationMixin:
                 if values.get(field):
                     result[field] = _opaque(values[field], field=field)
             if result.get("agent_id"):
+                if executor_route == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER:
+                    # The two routes are mutually exclusive: a Coding Worker
+                    # Goal must not smuggle in a Chat endpoint identity.
+                    raise ValueError(
+                        "a Coding Worker Goal must not also select a Chat agent endpoint"
+                    )
                 self._agent_eligibility(str(result["agent_id"]))
             if values.get("heartbeat") is not None:
                 if not isinstance(values["heartbeat"], Mapping):

@@ -1379,6 +1379,38 @@ class ChatRequestHandler(
             status=202 if result.get("turn") else 200,
         )
 
+    def _governed_turn_worker_projection(self) -> dict[str, Any]:
+        """Read-only projection of the governed-turn Coding Worker catalog.
+
+        Declaration-only on purpose: this read is on the Web's hot path, so it
+        never launches the host, and it reports ``not_probed`` rather than
+        implying a health verdict it has not measured. The authoritative
+        readiness probe runs at Goal-creation admission. Local absolute paths
+        and credentials are never projected.
+        """
+
+        from .control_plane.worker_catalog import worker_catalog_projection
+
+        try:
+            workspace: Path | None = None
+            selected = str(getattr(self.server, "selected_goal_id", "") or "")
+            registry_path = getattr(self.server, "registry_path", None)
+            if selected and registry_path is not None:
+                payload = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+                for goal in payload.get("goals") or []:
+                    if str(goal.get("id") or "") == selected and goal.get("repo"):
+                        workspace = Path(str(goal["repo"]))
+                        break
+            resolved = (workspace or Path.cwd()).expanduser().resolve()
+            return worker_catalog_projection(
+                workspace=resolved, authorized_workspaces=[resolved]
+            )
+        except Exception:  # noqa: BLE001 - a display read must not break capabilities
+            return {
+                "schema_version": "loopx_governed_turn_worker_catalog_v1",
+                "workers": [],
+            }
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == DEFAULT_EXTENSION_PRESENTATION_SURFACES_PATH:
@@ -1419,6 +1451,7 @@ class ChatRequestHandler(
                 "action_kinds": sorted(ACTION_KINDS),
                 "adapters": self.server.runtime_controller.capabilities(),
                 "lark_cli": self.server.lark_cli_resolution.public_snapshot(),
+                "governed_turn_workers": self._governed_turn_worker_projection(),
             }
             add_goal_subagent_capability(capabilities, server=self.server)
             self._send_json(capabilities)
