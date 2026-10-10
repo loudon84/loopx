@@ -1973,6 +1973,7 @@ button.personal-execution-chip:focus-visible { outline: 2px solid #0070f3; outli
 .personal-action-form button:disabled { opacity: .5; cursor: default; }
 .personal-action-form [role="alert"] { color: var(--pw-red); }
 .personal-action-form-limit { margin: 0; color: var(--pw-amber); font-size: 13px; }
+.personal-action-form-note { margin: 0; color: var(--pw-muted); font-size: 13px; }
 
 .personal-capability-supported-scopes { margin: 6px 0; color: var(--pw-muted); font-size: 12px; line-height: 1.5; }
 

@@ -224,9 +224,15 @@ Worker 只读投影（Web 读取路径）：
 
 覆盖：默认 Chat 路线行为不变；worker 路线**不触发** `cannot execute Goal tools`；未知 `executor_route` 拒绝；未注册 worker 拒绝；worker + `agent_id` 混用拒绝；**worker 不可用时不创建 Goal（fail closed）**；只读投影不泄漏路径。
 
-### 7.5 Phase 2 未完成项（如实标注）
+### 7.5 Phase 2 完成度与剩余项
 
-1. **Dashboard 表单**未改（`apps/presentation/dashboard/src/views/dashboard-page.tsx`）：后端路由已通，前端仍未暴露「执行器类型」选择器。这是 Gate P2「从 Web 创建」在 UI 层的最后一段。
+**已完成（含 UI 层）**
+
+1. **Dashboard 执行器类型选择器**已接入：`goal-create-request.ts` 新增 `GoalExecutorRoute` 与 `DEFAULT_CODING_WORKER_ENDPOINT_ID`；`workspace-action-form.tsx` 在「执行权限」下方增加「执行器类型」选择（Chat Agent / DSH Coding Worker）并附不可用说明。契约测试断言：worker 路线**发出** `executor_route` + `worker_endpoint_id` 且**不含** `agent_id`；默认 Chat 路线 payload 形状**不变**。`tsc --noEmit` 通过，`personal-workspace-contract.test.mjs` 通过，主题/字体 token 契约通过。
+   - 注：新增的 `var(--pw-muted)` 已在该样式表定义并使用 180 次；仓库根的 `scripts/check-css-custom-properties.mjs` 因**缺少根 `node_modules`（无 `typescript` 包）**而在 import 阶段即失败——这是既有环境缺口，与本次改动无关（未安装根依赖，亦未安装全局依赖）。
+
+**剩余项**
+
 2. `loopx/chat_server.py` 的 capabilities 投影为**声明式**；把真实探测结果作为独立只读健康投影（FR-11/AC-15）留待 Phase 3。
 3. 首轮 Turn 的**异步下发**未接线：Goal + Todos 已创建，执行仍由 `loopx turn run-once` 显式驱动（Phase 1 已验证该路径）。
 

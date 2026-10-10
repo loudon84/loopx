@@ -1,4 +1,5 @@
-import { goalCreateContent, goalCreateRequest } from "./goal-create-request";
+import { DEFAULT_CODING_WORKER_ENDPOINT_ID, goalCreateContent, goalCreateRequest } from "./goal-create-request";
+import type { GoalExecutorRoute } from "./goal-create-request";
 import { useEffect, useId, useRef, useState } from "react";
 import { useWorkspaceI18n } from "./i18n";
 import type { WorkspaceActionPreviewRequest } from "./personal-workspace-model";
@@ -38,6 +39,9 @@ export function WorkspaceActionForm({ draft, onClose, onPreview }: {
   const [completion, setCompletion] = useState(draft.completionCriteria ?? "");
   const [boundary, setBoundary] = useState(draft.executionBoundary ?? "");
   const [permission, setPermission] = useState<string>(draft.permission ?? "workspace_write_on_confirmation");
+  // Execution-capable Coding Workers are a distinct route, not a Chat endpoint
+  // the form may select. Default stays the managed Chat Agent.
+  const [executor, setExecutor] = useState<GoalExecutorRoute>("chat_agent");
   const [interval, setInterval] = useState(draft.kind === "heartbeat" ? "1" : "2");
   const [unit, setUnit] = useState(draft.kind === "heartbeat" ? "d" : "h");
   const [stop, setStop] = useState("goal_complete");
@@ -66,7 +70,8 @@ export function WorkspaceActionForm({ draft, onClose, onPreview }: {
     try {
       if (draft.kind === "goal") {
         await onPreview(goalCreateRequest({ objective, completion, boundary, permission,
-          agentId: draft.agentId, contextGoalId: draft.goalId }, t));
+          agentId: draft.agentId, contextGoalId: draft.goalId,
+          executorRoute: executor, workerEndpointId: DEFAULT_CODING_WORKER_ENDPOINT_ID }, t));
         onClose();
         return;
       }
@@ -104,6 +109,8 @@ export function WorkspaceActionForm({ draft, onClose, onPreview }: {
             <label>{zh ? "完成标准" : "Completion criteria"}<textarea aria-label={zh ? "完成标准" : "Completion criteria"} required value={completion} onChange={(event) => setCompletion(event.target.value)} /></label>
             <label>{zh ? "执行边界（可选）" : "Execution boundary (optional)"}<textarea aria-label={zh ? "执行边界（可选）" : "Execution boundary (optional)"} value={boundary} onChange={(event) => setBoundary(event.target.value)} /></label>
             <label>{zh ? "执行权限" : "Execution permission"}<select aria-label={zh ? "执行权限" : "Execution permission"} value={permission} onChange={(event) => setPermission(event.target.value)}><option value="read_only">{zh ? "只读" : "Read only"}</option><option value="workspace_write_on_confirmation">{zh ? "确认后允许修改工作区" : "Allow workspace changes after confirmation"}</option></select></label>
+            <label>{zh ? "执行器类型" : "Executor type"}<select aria-label={zh ? "执行器类型" : "Executor type"} value={executor} onChange={(event) => setExecutor(event.target.value as GoalExecutorRoute)}><option value="chat_agent">{zh ? "Chat Agent（只读管家）" : "Chat Agent (managed steward)"}</option><option value="governed_turn_worker">{zh ? "DSH Coding Worker（受控执行）" : "DSH Coding Worker (governed execution)"}</option></select></label>
+            {executor === "governed_turn_worker" ? <p className="personal-action-form-note" role="note">{zh ? "执行型 Worker 在授权工作区内运行受控 Turn：可用性由真实探测决定，不可用时不会创建 Goal。" : "A Coding Worker runs governed Turns inside the authorized workspace. Availability comes from a live probe; an unavailable worker will not create the Goal."}</p> : null}
           </> : null}
         </>}
       </fieldset>

@@ -385,6 +385,31 @@ for (const contextGoalId of [null, "existing-research-goal"]) {
   assert.equal(request.normalizedParameters.goal_id, "goal-new-research");
   assert.notEqual(request.normalizedParameters.goal_id, contextGoalId);
 }
+// An execution-capable Coding Worker is a distinct executor route, never a Chat
+// endpoint the form may select, and the default Chat payload shape is unchanged.
+{
+  const worker = goalCreateRequest({
+    objective: "Add src/hello.py", completion: "hello('LoopX') == 'Hello, LoopX'",
+    boundary: "Isolated testbed only", agentId: "dsh",
+    permission: "workspace_write_on_confirmation", contextGoalId: null,
+    operationId: "worker-goal", executorRoute: "governed_turn_worker",
+  }, (key) => key);
+  assert.equal(worker.normalizedParameters.executor_route, "governed_turn_worker",
+    "The Coding Worker route is emitted explicitly");
+  assert.equal(worker.normalizedParameters.worker_endpoint_id, "dsh-coding-worker-local",
+    "The Coding Worker route names its registered worker endpoint");
+  assert.equal(Object.hasOwn(worker.normalizedParameters, "agent_id"), false,
+    "A Coding Worker Goal must not also carry a Chat agent endpoint id");
+
+  const chat = goalCreateRequest({
+    objective: "Survey public sources", completion: "A sourced summary",
+    boundary: "Public sources only", agentId: "dsh", permission: "read_only",
+    contextGoalId: null, operationId: "chat-goal",
+  }, (key) => key);
+  assert.equal(Object.hasOwn(chat.normalizedParameters, "executor_route"), false,
+    "The default Chat route keeps its historical payload shape");
+  assert.equal(chat.normalizedParameters.agent_id, "dsh");
+}
 assert.match(page, /t\("proposal\.workspace\.current"\)/, "Create Goal localizes its execution workspace explanation");
 assert.match(i18n, /Current local workspace \(no Repository bound\)/, "English workspace copy explains that no repository is bound");
 assert.match(i18n, /当前本地工作区（未绑定 Repository）/, "Chinese workspace copy explains that no repository is bound");
