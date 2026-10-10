@@ -123,6 +123,48 @@ Worker 只处理 `Turn request → DSH execution → typed result`。以下全�
 
 ## 8. 待评审事项
 
-1. **AC-03 评测口径**：Steward 当前 `available:false` 属既有环境条件。是要求先修复 `configured_runner`/venv 接线再评测回归，还是把“Steward 仍 `tool_calls=false`+`read_only`”作为回归口径而把可用性单列？
-2. **Worker 能力归属**：DSH Coding Worker 应 `[[implements]]` 哪个既有核心能力（governed turn host / external connector / 其他），还是必须 `[[provides]]` 新能力？需在 Phase 1 与 capability registry 对齐后定稿。
+1. **AC-03 评测口径**：Steward 当前 `available:false` 属既有环境条件（未配置 `configured_runner`，且 `deepseek_harness` 只在 `loopx-dsh-venv` 内可导入）。是要求先修复接线再评测回归，还是把“Steward 仍 `tool_calls=false`+`read_only`”作为回归口径而把可用性单列？
+2. ~~**Worker 能力归属**~~ → **已由 Phase 2 证据解决**：`loopx capability list` 的 24 个 builtin 能力中没有 turn-host 类能力，且 `loopx/chat_endpoints.py:111-121` 强制 `adapter_kind="acp"` + `trust_scope="read_only"`，二者都无法承载执行型 Worker。因此不复用能力注册面，改为新增 Goal 级 `executor_route` + 独立 Worker Catalog 读模型（见 `worker_catalog.py`）。
 3. **`session_resume` 升级条件**：是否批准第二次极小真实调用以验证跨进程正路径恢复（phase0 U-01 / AC-17）。
+
+---
+
+## 9. AD-07：AC-09 依赖门禁使用 LoopX 原生机制（裁定）
+
+### 9.1 裁定问题
+
+PRD §9.1 要求「Todo 2 **必须待 Todo 1 验证通过并结算后才能启动**」。Phase 3 实测发现 `quota should-run` 会把两个 `open` 的 Todo 同时发布（`recommended` / `alternative`，`decision_owner=agent`），依赖顺序仅由 host loop 遵循推荐来保证。需裁定：是否要为依赖型 Todo 新增 LoopX 侧硬门禁。
+
+### 9.2 实测证据（隔离夹具，无模型调用）
+
+| 配置 | 前驱完成后的实际行为 |
+|---|---|
+| B `blocked`，无 successor 声明 | `decision=autonomous_replan_required`；B **不出现在** `primary_action` 或 `suggested_actions` |
+| B `blocked`，A 完成时声明 `--successor-todo-id B` | `decision=run`、`mode=bounded_delivery`；**B 成为唯一 `primary_action`** |
+| A 完成且声明 `--successor-todo-id B` 之前 | `todo update --successor-todo-id` 被拒：`native metadata update cannot complete a Todo; use the terminal lifecycle command` → successor 只能在**完成时**声明 |
+
+`--unblocks-todo-id` / `--status blocked` / `--successor-todo-id` / `--no-follow-up` 均为既有 CLI 语义，且 LoopX 明确禁止「invent a user gate or add a lifecycle-only filler Todo」。
+
+### 9.3 裁定
+
+**不新增任何门禁子系统，也不改 LoopX Core 的依赖语义。** AC-09 的时序要求用 LoopX **既有**原语表达即可，且必须这样表达：
+
+1. **依赖方 Todo 以 `status=blocked` 声明** → 它在被链接前**不会**进入候选集，这是真实的「不可选」而非「备选」。
+2. **前驱完成时声明后继**：`todo complete --successor-todo-id <B>`。这既满足 LoopX 的 `autonomous_replan_required` 义务，也正是**释放** B 的唯一动作。
+3. **确实没有真实后继时**显式声明 `--no-follow-up`，不得伪造 user gate 或占位 Todo。
+
+即：**门禁的所有权在 LoopX 的 Todo 生命周期，Worker 只负责「声明」，绝不自行造门禁**（符合 AD-03）。Phase 3 的 host loop 已据此实现 `_successor_declaration`：存在唯一 blocked 后继则链接、无后继则声明 `--no-follow-up`、多个候选（歧义）则不猜并保留 LoopX 的义务。
+
+### 9.4 该裁定的三个直接后果
+
+1. **对 Phase 3 的修正**：原实现用 `todo complete` 时不带后继声明，会让「完成一个 Todo 后已无可运行后继」的 Goal 卡在 `autonomous_replan_required`。已修复（`governed_turn_loop.py`）。
+2. **对 Phase 2 向导的修正项**：当用户在 Web 声明 Todo 顺序依赖时，`goal.create` 应把后续 Todo 以 `status=blocked` 建立，并在前驱完成路径上声明后继；否则依赖只是「推荐」而非「门禁」。这是 Gate P2 之外的一项后续改造。
+3. **对 AC-09 判定口径的影响**：AC-09 的通过条件是「**第二个独立 Turn 自动启动且有独立 Turn 记录**」，与依赖是否硬门禁是两件事。Phase 3 已满足前者；依赖硬门禁是 R-08 的强化，现已具备可复用的原生实现路径。
+
+### 9.5 被拒绝的方案
+
+| 方案 | 拒绝理由 |
+|---|---|
+| 在 Worker/adapter 内自建依赖状态机 | 违反 AD-03（不得新建 Task DB / Todo 状态机 / 审批 Gate） |
+| 改 LoopX Core 增加依赖字段与拒绝逻辑 | 既有 `blocked` + successor 原语已能表达，属重复建设 |
+| 仅靠 host loop 遵循推荐顺序 | 会让 Todo 2 的 Turn 在前驱结算前**真实启动**并消耗配额与模型调用，不满足「才能启动」 |

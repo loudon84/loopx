@@ -118,3 +118,47 @@ def test_loop_error_is_raised_when_loopx_is_unavailable(
 
     with pytest.raises(loop.LoopError):
         loop._run_cli(["loopx", "--version"], cwd=tmp_path, timeout=5)
+
+
+# --------------------------------------------------------------------------
+# Continuation declaration (LoopX's autonomous_replan_required obligation)
+# --------------------------------------------------------------------------
+
+
+def test_single_blocked_todo_becomes_the_declared_successor(monkeypatch) -> None:
+    monkeypatch.setattr(
+        loop, "_blocked_todo_ids", lambda **_kwargs: ["todo_dependent"]
+    )
+
+    declaration = loop._successor_declaration(
+        base=["loopx"], goal_id="g", project=__import__("pathlib").Path("."),
+        timeout_seconds=5,
+    )
+
+    assert declaration == ["--successor-todo-id", "todo_dependent"]
+
+
+def test_no_blocked_todo_declares_no_follow_up(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_blocked_todo_ids", lambda **_kwargs: [])
+
+    declaration = loop._successor_declaration(
+        base=["loopx"], goal_id="g", project=__import__("pathlib").Path("."),
+        timeout_seconds=5,
+    )
+
+    assert declaration == ["--no-follow-up"]
+
+
+def test_ambiguous_successors_are_not_guessed(monkeypatch) -> None:
+    """Two blocked candidates must keep LoopX's obligation, not pick one."""
+
+    monkeypatch.setattr(
+        loop, "_blocked_todo_ids", lambda **_kwargs: ["todo_a", "todo_b"]
+    )
+
+    declaration = loop._successor_declaration(
+        base=["loopx"], goal_id="g", project=__import__("pathlib").Path("."),
+        timeout_seconds=5,
+    )
+
+    assert declaration == []

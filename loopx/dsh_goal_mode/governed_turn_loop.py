@@ -477,6 +477,12 @@ def _settle_prepared_turn(
             json.dumps(validation_argv),
             "--validation-label",
             "host loop completion validation",
+            *_successor_declaration(
+                base=base,
+                goal_id=goal_id,
+                project=project,
+                timeout_seconds=timeout_seconds,
+            ),
         ],
         cwd=project,
         timeout=timeout_seconds,
@@ -516,6 +522,67 @@ def _settle_prepared_turn(
     record = _parse_turn_report(resumed)
     record.turn_instance_id = turn_instance_id
     return record
+
+
+def _blocked_todo_ids(
+    *, base: list[str], goal_id: str, project: Path, timeout_seconds: float
+) -> list[str]:
+    """List the Goal's blocked Todos using LoopX's own projection."""
+
+    listing = _run_json(
+        base
+        + [
+            "todo",
+            "list",
+            "--goal-id",
+            goal_id,
+            "--project",
+            str(project),
+            "--role",
+            "agent",
+            "--limit",
+            "50",
+        ],
+        cwd=project,
+        timeout=timeout_seconds,
+    )
+    return [
+        str(todo.get("todo_id"))
+        for todo in (listing.get("todos") or [])
+        if str(todo.get("status") or "") == "blocked" and todo.get("todo_id")
+    ]
+
+
+def _successor_declaration(
+    *,
+    base: list[str],
+    goal_id: str,
+    project: Path,
+    timeout_seconds: float,
+) -> list[str]:
+    """Declare the completed Todo's continuation to LoopX.
+
+    LoopX raises an ``autonomous_replan_required`` obligation after a completion
+    that leaves no runnable successor, and it explicitly forbids inventing a
+    user gate or a filler Todo. The honest answer is therefore one of exactly
+    two declarations:
+
+    * a dependent Todo is waiting, so link it (``--successor-todo-id``), which is
+      what releases a ``blocked`` dependent into eligibility;
+    * nothing real remains, so say so (``--no-follow-up``).
+
+    With more than one blocked candidate the successor is ambiguous, so the loop
+    declares nothing and lets LoopX keep the obligation rather than guessing.
+    """
+
+    blocked = _blocked_todo_ids(
+        base=base, goal_id=goal_id, project=project, timeout_seconds=timeout_seconds
+    )
+    if len(blocked) == 1:
+        return ["--successor-todo-id", blocked[0]]
+    if not blocked:
+        return ["--no-follow-up"]
+    return []
 
 
 def _runtime_root_for(registry_path: Path | None, project: Path) -> Path:
