@@ -290,3 +290,40 @@ Worker 只读投影（Web 读取路径）：
 10 passed   tests/test_governed_turn_loop.py
 ```
 
+
+---
+
+## 9. Phase 3 剩余项（停止语义与运行可观测）
+
+### 9.1 host loop 的停止与续跑语义
+
+| 能力 | 状态 | 证据 |
+|---|---|---|
+| **暂停（pause）** | ✅ 实测 | `goal-lifecycle --operation stop --actor-kind owner` 后，`quota should-run` 返回 `decision=skip, state=paused`；循环 `stop_kind=paused`、**`host_invocations=0`** |
+| **人工 Gate 停止** | ✅ 实测 | 开放 user_gate 时 `stop_kind=gate`、**`host_invocations=0`** |
+| **配额/预算停止** | ✅ 按类覆盖 | 暂停与 Gate 已实测；整个拒绝类（含 `quota_exhausted`/`exhausted`）由单测证明「任何拒绝都在构建 Turn 之前短路」。**本机未能真实构造出配额耗尽态**（`--slots 0` 不影响 `allowed_slots=1440`），故不谎称实测 |
+| **取消（cancel）** | ✅ 实现+测试 | `cancel` 标志在问询前即停止；对进行中的 `loopx` 调用按**进程组** SIGTERM→SIGKILL 终止，不留 host |
+| **重启对账** | ✅ 实现+测试 | 结算改按 `plan.transaction.turn_instance_id`（并与 Todo 交叉校验）精确匹配；**未知或歧义身份一律不结算**，避免把上一次尝试残留的非终态 journal 误当本次 Turn |
+| **无工作可做** | ✅ 实测 | `stop_kind=no_work`（Phase 3 E2E 末态） |
+
+循环输出新增 `stop_kind` 与 `host_invocations` 两个字段 —— **AC-10 直接由字段断言，不再靠文字推断**。
+
+### 9.2 运行可观测（FR-11 / AC-15）
+
+- **后端**：新增 `loopx/control_plane/worker_run_readback.py`，把已记录的 Turn journal 投影为可追踪的运行行：Turn 标签、`turn_instance_id`、Todo、记录时间、终态、`result_kind`、完成阶段、独立验证结论（`status`/`passed`/`exit_code`/`validator_kind`）、`host_failure_kind`、尝试次数。
+- **接口**：`GET /api/chat/worker-runs?goal_id=…`（只读）。已对**三个真实 Turn** 实测：两个 `committed` 且七阶段齐全、验证 `passed`，一个被后续结算取代的 `in_progress` 尝试；缺失 `goal_id` 返回 typed error，未知 Goal 返回空历史而非报错。投影经断言确认不含任何本地路径、Session id 或 DSH home。
+- **诚实标注**：journal **不记录墙钟时间**，因此唯一给出的时间戳是 journal 文件自身的写入时间，并明确标记 `recorded_at_source=journal_file_mtime`，不伪装成 Turn 起止时间。
+- **未完成**：**Dashboard 尚未渲染这份数据**（AC-15 的 UI 层）。接口与投影已就绪并验证，UI 呈现是下一步。
+
+### 9.3 测试
+
+```
+31 passed   tests/test_governed_turn_loop.py   （停止分类 / AC-10 / 取消 / 精确身份）
+ 8 passed   tests/test_worker_run_readback.py  （AC-15 投影与脱敏）
+```
+
+### 9.4 如实标注的残留
+
+1. **AC-15 的 UI 呈现未做** —— 后端与接口已就绪。
+2. **配额耗尽态未在本机真实复现** —— 按类覆盖 + 两个真实拒绝态。
+3. **测试夹具遗留**：`/tmp/loopx-{ac09-probe,ac09-probe2,ac10-probe,p2,p3,...}` 及其在全局 registry 中的测试 Goal 仍在；如需清理请示意。
