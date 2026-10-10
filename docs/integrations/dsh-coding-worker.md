@@ -139,6 +139,34 @@ curl -s "http://127.0.0.1:<port>/api/chat/worker-runs?goal_id=<goal>" | python3 
 
 ---
 
+### 6.1 排序死锁：`--no-follow-up` 与 turn-scoped `refresh-state` 互相等待
+
+实测撞到过一个**真实的循环依赖**（已找到出口）：
+
+| 命令 | 拒绝理由 |
+|---|---|
+| `todo complete … --no-follow-up` | `requires matching writeback and quota spend receipts: matching accountable refresh-state receipt is missing for the original settlement identity` |
+| `refresh-state --turn-instance-id … --todo-id …` | `accountable refresh is blocked until controller-declared completion validation durably completes todo …` |
+
+两者都要求对方先完成。**出口是：先做一次不带 `--no-follow-up` 的普通 `todo complete`** —— 它会把「控制器声明的完成验证」durably 落库：
+
+```bash
+# 1) 普通完成（带 --validation-command-json），不要带 --no-follow-up
+loopx todo complete --goal-id <goal> --todo-id <todo> --agent-id <agent> \
+  --turn-instance-id <turn> --status done \
+  --task-lease-idempotency-key <lease-key> --task-lease-expected-version <v> \
+  --validation-command-json '[...]'
+# 2) 用已存在的 Turn 身份结算（不会重跑 host）
+loopx turn run-once --goal-id <goal> --agent-id <agent> --host dsh --project . \
+  --resume-turn-key <key> --dsh-runner <path> --validation-command-json '[...]' --execute
+```
+
+实测结果：`status=committed`、`validation=passed`、**`host_invoked=false`**、七阶段齐全、`commit_eligibility` 全 true。
+
+注意 `--no-follow-up` 仍然需要，只是**不能在第一步用**：普通完成会留下一个开放的重规划义务，用 §7 的方式（typed delta）清除。
+
+另外：`task-lease` 可能已被 host loop 持有，key 形如 `host-loop-lease-<todo_id>`。用 `loopx task-lease inspect` 查出来复用，不要另起一个 key（会得到 `todo_lease_conflict`）。
+
 ## 7. 强制约定：完成 Todo 必须声明后续
 
 **这是踩过的坑，写进手册以免重犯。**
