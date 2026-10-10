@@ -236,3 +236,57 @@ Worker 只读投影（Web 读取路径）：
 2. `loopx/chat_server.py` 的 capabilities 投影为**声明式**；把真实探测结果作为独立只读健康投影（FR-11/AC-15）留待 Phase 3。
 3. 首轮 Turn 的**异步下发**未接线：Goal + Todos 已创建，执行仍由 `loopx turn run-once` 显式驱动（Phase 1 已验证该路径）。
 
+---
+
+## 8. Phase 3：自动续跑与端到端
+
+### 8.1 交付
+
+`loopx/dsh_goal_mode/governed_turn_loop.py` —— **host loop**，不是调度器。LoopX 对于 generic CLI host 只提供 `quota should-run` 这一问询面，续跑由 host 侧提供。该循环每一步都是对权威 `loopx` CLI 的调用：
+
+1. `quota should-run`（不带 todo）→ LoopX 决定是否有任何工作被准入；
+2. 取 LoopX **发布**的候选 Todo（`action_portfolio.primary` / `suggested_actions`，或单候选时的 `agent_channel.primary_action`），不自行排序；
+3. 带 `--todo-id` + `--turn-instance-id` 重新问询以**显式绑定**一次 Turn（`selection_policy.requires_explicit_turn_binding = true`）；
+4. `turn run-once --host dsh --dsh-runner … --validation-command-json … --execute`；
+5. 结算栅栏：若 Turn 处于 `durable_writeback` 未完成态，则声明完成验证并用**已存在的 Turn 身份** `--resume-turn-key` 结算，**绝不重跑已产生副作用的 host**（读取 Turn journal 定位身份，符合 PRD §4.4）；
+6. 回到 1。
+
+停止条件（全部来自 LoopX 判定）：`should_run=false`、无可用 Todo、Turn 非 committed、达到 `max_turns`。**不新增 Task DB、不新增定时器、不新增审批 Gate。**
+
+### 8.2 端到端实测（隔离夹具）
+
+夹具：`/tmp/loopx-dsh-coding-worker-p3`（独立 git 仓库）｜Goal `p3-coding-worker-goal`｜Agent `dsh-p3-worker-01`
+
+| 项 | Todo 1 | Todo 2 |
+|---|---|---|
+| Todo | `todo_427704b9d2eb0570b25a72e8` | `todo_9e9e1a6367adc88a5b035bf9` |
+| 任务 | 新增 `src/hello.py` | 新增 `tests/test_hello.py` |
+| 产物 | `src/hello.py` sha256 `f37ba66e…` | `tests/test_hello.py` sha256 `faf8136e…` |
+| 终局 | `committed` / `validated_progress` | `committed` / `validated_progress` |
+| 验证 | `status: passed`, `exit_code: 0` | `status: passed`, `exit_code: 0` |
+| 阶段 | `host_execute, typed_result, validation, durable_writeback, quota_spend, scheduler_apply, scheduler_ack` | 同左 |
+
+- **两个 Todo 均 `done`**，两条 Turn journal 均为 `committed` 且阶段序列完整。
+- **Turn 2 由 LoopX 续跑放行，两轮之间没有任何人工消息**：循环在第 1 轮结算后重新问询，LoopX 发布 Todo 2，循环随即执行第 2 轮；第 2 轮结算后再次问询返回 `no_eligible_todo`，循环干净退出。
+- 我另行独立运行 `python3 -m unittest discover`（非模型自述）→ `Ran 1 test … OK`，exit 0。
+
+### 8.3 真实执行暴露并修复的两个解析缺陷
+
+均为「把可结算的 Turn 误判为 unknown 而停机」的静默故障，已修复并有回归测试（`tests/test_governed_turn_loop.py`，10 项）：
+
+1. `turn run-once --format json` 的字段**嵌套层级与 markdown 摘要不同**，按扁平键读取得到 `status=unknown`。改为按名递归查找（`_deep_get` / `_deep_contains`）。
+2. LoopX 在**只有一个**候选 Todo 时把 `action_portfolio.primary`/`suggested_actions` 置为 `null`，改由 `interaction_contract.agent_channel.primary_action`（`"<todo_id>: <text>"`）发布。补齐该来源后循环正确选中 Todo 2。
+
+### 8.4 如实标注的发现与残留风险
+
+1. **Todo 顺序是「推荐」不是「硬栅栏」**：`quota should-run` 会把 Todo 1 与 Todo 2 **同时**发布（`selection_role: recommended` / `alternative`），`selection_policy.decision_owner = agent`。LoopX 用推荐顺序 + 强制显式 Turn 绑定来表达依赖，而不是把 Todo 2 置为不可选。因此「Todo 2 必须等 Todo 1 结算」目前由 host loop 遵循推荐顺序来保证，而非由 LoopX 拒绝。**这是 AC-09 的一个语义缺口，需要评审是否要求 LoopX 侧硬门禁。**
+2. **journal 残留非终态条目**：修复前的失败尝试在 `turns/` 留下一条 `in_progress` 记录（`c83199d3…`，阶段止于 `validation`）。结算会以新 Turn 身份记录 `committed`，原条目不被终结。当前 `_in_progress_turn_key` 取排序后第一个匹配，存在**选错身份**的风险；Phase 4 前应改为按 `turn_instance_id` 精确匹配。
+3. **本次 E2E 跨两次循环调用完成**：第 1 轮由第一次调用完成，其后我修复了上述解析缺陷，第 2 轮由修复后的调用完成——它在**同一次调用内**完成了「问询 → 执行 → 结算 → 再问询 → `no_eligible_todo` 退出」，即自动续跑机制本身已单次验证，但「Turn 1 与 Turn 2 连续跑在同一次调用内」未直接观测到（因我的缺陷导致第 1 轮提前结束）。
+4. **未做**：暂停/取消/重启对账（FR-10）、预算不足停止、Dashboard 执行详情回显（FR-11/AC-15）、Session resume 正路径（U-01）。
+
+### 8.5 测试
+
+```
+10 passed   tests/test_governed_turn_loop.py
+```
+
