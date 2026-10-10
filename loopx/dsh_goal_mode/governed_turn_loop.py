@@ -32,6 +32,7 @@ import signal
 import subprocess
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -297,6 +298,53 @@ def _eligible_todo_ids(should_run: dict[str, Any]) -> list[str]:
     return ids
 
 
+#: A Turn whose host already ran but whose settlement is not committed. LoopX
+#: reports this in more than one shape, and matching only one of them silently
+#: turns a settleable Turn into a failure.
+_SETTLEMENT_FENCE_MARKERS = (
+    "durable_writeback",
+    "controller-declared completion validation",
+    "accountable refresh is blocked",
+)
+
+
+def _deep_mentions(payload: Any, needle: str, _depth: int = 0) -> bool:
+    """Substring match over every string in a payload.
+
+    ``_deep_contains`` compares whole values, which suits enum-like tokens such
+    as ``durable_writeback``. The settlement fence is also reported as prose, so
+    this companion matches inside sentences without loosening the exact-value
+    helper other callers rely on.
+    """
+
+    if _depth > 6:
+        return False
+    if isinstance(payload, str):
+        return needle in payload
+    if isinstance(payload, Mapping):
+        return any(_deep_mentions(v, needle, _depth + 1) for v in payload.values())
+    if isinstance(payload, list):
+        return any(_deep_mentions(v, needle, _depth + 1) for v in payload)
+    return False
+
+
+def _is_settlement_fence(record: "TurnRecord", report: Mapping[str, Any]) -> bool:
+    """Return whether only the settlement is missing for an executed Turn.
+
+    A Turn whose host already ran must never be re-invoked. LoopX reports that
+    state in more than one shape -- an exact ``durable_writeback`` marker, or the
+    prose "accountable refresh is blocked until controller-declared completion
+    validation durably completes todo ..." -- and matching only one of them
+    silently turned a settleable Turn into a reported failure.
+    """
+
+    if record.status == "committed":
+        return False
+    if record.recovery_from == "durable_writeback":
+        return True
+    return any(_deep_mentions(report, marker) for marker in _SETTLEMENT_FENCE_MARKERS)
+
+
 def run_host_loop(
     *,
     goal_id: str,
@@ -475,10 +523,7 @@ def run_host_loop(
         # 4. Settlement fence. A Turn whose host already ran must never be
         #    re-invoked; when only the durable writeback is missing, complete the
         #    controller-declared Todo validation and resume the SAME Turn.
-        if record.status != "committed" and (
-            record.recovery_from == "durable_writeback"
-            or _deep_contains(report, "durable_writeback")
-        ):
+        if _is_settlement_fence(record, report):
             settled = _settle_prepared_turn(
                 base=base,
                 goal_id=goal_id,

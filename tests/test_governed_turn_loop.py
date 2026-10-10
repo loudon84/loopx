@@ -373,3 +373,32 @@ def test_every_refusal_short_circuits_before_the_host(
     assert outcome.stop_kind == expected_kind
     # Exactly one guard call: the loop asked once and obeyed the answer.
     assert calls["n"] == 1
+
+
+def test_settlement_fence_recognises_more_than_one_report_shape() -> None:
+    """Regression: a live run reported the fence without the durable_writeback
+    literal, so the loop treated a settleable Turn as a failure."""
+
+    record = loop.TurnRecord(
+        turn_instance_id="t", todo_id="todo_a", action="continue", status="observed",
+        result_kind="unknown", validation="unknown", host_invoked=True,
+    )
+
+    # The shape a real run produced.
+    assert loop._is_settlement_fence(
+        record,
+        {"error": "accountable refresh is blocked until controller-declared "
+                  "completion validation durably completes todo todo_a"},
+    )
+    # The originally-recognised shape must keep working.
+    assert loop._is_settlement_fence(
+        record, {"recorded_effects": {"host_invoked": True}, "recovery_from": "durable_writeback"}
+    )
+    assert loop._is_settlement_fence(record, {"recovery_from": "durable_writeback"})
+    # A committed Turn is never a fence, and an unrelated failure is not one.
+    committed = loop.TurnRecord(
+        turn_instance_id="t", todo_id="todo_a", action="continue", status="committed",
+        result_kind="validated_progress", validation="passed", host_invoked=True,
+    )
+    assert not loop._is_settlement_fence(committed, {"recovery_from": "durable_writeback"})
+    assert not loop._is_settlement_fence(record, {"error": "host could not start"})
