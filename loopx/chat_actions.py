@@ -335,7 +335,11 @@ class ChatActionService(
         is reported unavailable rather than admitted.
         """
 
-        from .control_plane.worker_catalog import admit_worker, resolve_worker
+        from .control_plane.worker_catalog import (
+            admit_worker,
+            resolve_worker,
+            worker_unavailable_reason,
+        )
 
         session_mode = project_parameters.get("session_mode")
         descriptor = resolve_worker(
@@ -343,6 +347,13 @@ class ChatActionService(
             authorized_workspaces=[project],
             session_mode=str(session_mode) if session_mode else None,
         )
+        if descriptor is None and worker_unavailable_reason(
+            worker_endpoint_id
+        ) == "feature_flag_disabled":
+            raise ValueError(
+                "the Coding Worker capability is disabled on this machine "
+                "(opt in with LOOPX_DSH_CODING_WORKER=1)"
+            )
         probe = admit_worker(
             descriptor, workspace=project, endpoint_id=worker_endpoint_id
         )

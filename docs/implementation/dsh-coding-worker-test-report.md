@@ -327,3 +327,46 @@ Worker 只读投影（Web 读取路径）：
 1. **AC-15 的 UI 呈现未做** —— 后端与接口已就绪。
 2. **配额耗尽态未在本机真实复现** —— 按类覆盖 + 两个真实拒绝态。
 3. **测试夹具遗留**：`/tmp/loopx-{ac09-probe,ac09-probe2,ac10-probe,p2,p3,...}` 及其在全局 registry 中的测试 Goal 仍在；如需清理请示意。
+
+---
+
+## 10. Phase 4：功能旗标、回滚与操作手册
+
+### 10.1 功能旗标默认关闭
+
+能力**随包发行时是暗的**。开关是环境变量 `LOOPX_DSH_CODING_WORKER`：
+
+| 取值 | 效果 |
+|---|---|
+| 未设 / `0` / `false` / `off` / `no` / 空 / **任意无法识别的值** | 关闭（默认） |
+| `1` / `true` / `yes` / `on` | 开启 |
+
+无法识别的值一律按关闭处理 —— 回滚只需清掉变量，不必猜。
+
+实测（`env -u LOOPX_DSH_CODING_WORKER`）：
+
+```
+enabled: False | resolves: None
+featured workers: 0 | flag: {'name': 'LOOPX_DSH_CODING_WORKER', 'enabled': False, 'default': 'disabled'}
+```
+
+关闭时 `goal.create(executor_route=governed_turn_worker)` 返回 typed 拒绝并**指出 opt-in 变量**，且**不创建 Goal**。
+
+### 10.2 回滚保证（已由测试固定）
+
+- 旗标清除后，Worker 路线被拒且不创建 Goal（`test_worker_route_is_refused_while_the_capability_is_dark`）。
+- 同一状态下 **Chat Agent 路线完全不受影响**（`test_chat_agent_route_still_works_while_the_capability_is_dark`）。
+- 回滚的完整步骤、在途 Turn 的 `--resume-turn-key` 对账、孤儿进程检查写在 `docs/integrations/dsh-coding-worker.md` §8。
+
+### 10.3 操作手册
+
+新增 `docs/integrations/dsh-coding-worker.md`：安装前提、旗标、执行、可观测、排障（含 `blocked_health` = 目标被暂停、验证命令必须是 argv 形式、`bound_agent` actor 等真实踩过的项）、回滚、已知边界、验收清单。
+
+其中 §7 把一条**真实教训**写成强制约定：**完成 Todo 必须声明后继或 `--no-follow-up`**，且只能在完成时声明。这条是我自己手工记账时踩到的坑（host loop 会自动做，手工绕过就留下 `autonomous_replan_required` 义务且事后无法补）。
+
+### 10.4 测试
+
+```
+122 passed  新增测试全集（含 29 项 worker catalog：默认关闭 / 真值解析 / 回滚拒绝 / Chat 不受影响）
+211 passed  既有回归（DSH 三件套）
+```

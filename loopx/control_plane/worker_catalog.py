@@ -48,6 +48,36 @@ EXECUTOR_ROUTES = frozenset(
     {EXECUTOR_ROUTE_CHAT_AGENT, EXECUTOR_ROUTE_GOVERNED_TURN_WORKER}
 )
 
+#: Opt-in switch for the whole execution-worker capability. Default OFF: the
+#: worker provider ships dark and is enabled per machine only after review.
+WORKER_FEATURE_FLAG_ENV = "LOOPX_DSH_CODING_WORKER"
+_TRUTHY = {"1", "true", "yes", "y", "on"}
+
+
+def coding_worker_enabled(environment: Mapping[str, str] | None = None) -> bool:
+    """Return whether the Coding Worker capability is switched on.
+
+    Default off, and only an explicit truthy value turns it on. An unset,
+    empty or unrecognised value leaves the provider disabled rather than
+    guessing, so a rollback that clears the flag restores the old behaviour.
+    """
+
+    environ = environment if environment is not None else os.environ
+    return str(environ.get(WORKER_FEATURE_FLAG_ENV, "")).strip().lower() in _TRUTHY
+
+
+def worker_unavailable_reason(
+    endpoint_id: str, *, environment: Mapping[str, str] | None = None
+) -> str:
+    """Explain why a worker endpoint cannot be used, without guessing."""
+
+    if str(endpoint_id or "").strip() not in BUILTIN_WORKER_ENDPOINTS:
+        return "not_registered"
+    if not coding_worker_enabled(environment):
+        return "feature_flag_disabled"
+    return "registered"
+
+
 #: Worker kinds this catalog can describe.
 WORKER_KIND_DSH_CODING_WORKER = "dsh_coding_worker"
 WORKER_KINDS = frozenset({WORKER_KIND_DSH_CODING_WORKER})
@@ -159,8 +189,13 @@ def resolve_worker(
     reasoning_effort: str | None = None,
     max_tokens: int | None = None,
     timeout_seconds: float | None = None,
+    require_enabled: bool = True,
 ) -> WorkerDescriptor | None:
-    """Resolve one worker endpoint id, or ``None`` when it is not registered.
+    """Resolve one worker endpoint id, or ``None`` when it is unavailable.
+
+    With ``require_enabled`` (the default) a disabled feature flag resolves to
+    ``None``, so no caller can admit or launch a worker that the machine has not
+    opted into.
 
     Explicit configuration always outranks catalog defaults. ``environment``
     is consulted for ``DSH_HOME`` and the DSH binary override so the same
@@ -172,6 +207,8 @@ def resolve_worker(
         return None
 
     environ = dict(environment if environment is not None else os.environ)
+    if require_enabled and not coding_worker_enabled(environ):
+        return None
     env_dsh_home = str(environ.get("DSH_HOME") or "").strip()
     resolved_home = (
         Path(dsh_home).expanduser()
@@ -431,6 +468,11 @@ def worker_catalog_projection(
             )
     return {
         "schema_version": WORKER_CATALOG_SCHEMA_VERSION,
+        "feature_flag": {
+            "name": WORKER_FEATURE_FLAG_ENV,
+            "enabled": coding_worker_enabled(environment),
+            "default": "disabled",
+        },
         "workers": workers,
     }
 

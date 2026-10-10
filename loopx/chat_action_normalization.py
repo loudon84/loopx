@@ -508,6 +508,7 @@ class ChatActionNormalizationMixin:
                 TRUST_SCOPE_WORKSPACE_WRITE,
                 normalize_executor_route,
                 resolve_worker,
+                worker_unavailable_reason,
             )
 
             executor_route = normalize_executor_route(values.get("executor_route"))
@@ -517,11 +518,17 @@ class ChatActionNormalizationMixin:
                     values.get("worker_endpoint_id"), field="worker_endpoint_id"
                 )
                 descriptor = resolve_worker(worker_endpoint_id)
+                unavailable = worker_unavailable_reason(worker_endpoint_id)
                 # Registration and declaration are checked here so a preview
                 # fails fast and without spawning a host process. The live
                 # availability probe belongs to admission, where the Goal's
                 # workspace is already resolved.
                 if descriptor is None:
+                    if unavailable == "feature_flag_disabled":
+                        raise ValueError(
+                            "the Coding Worker capability is disabled on this "
+                            "machine (opt in with LOOPX_DSH_CODING_WORKER=1)"
+                        )
                     raise ValueError(
                         "selected Coding Worker endpoint is not registered"
                     )

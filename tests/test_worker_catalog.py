@@ -25,6 +25,13 @@ from tests.dsh_cli_fake_launcher import write_fake_launcher
 WORKER_ENDPOINT_ID = "dsh-coding-worker-local"
 
 
+@pytest.fixture(autouse=True)
+def _worker_capability_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The capability ships dark; every test starts from the shipped default."""
+
+    monkeypatch.delenv(worker_catalog.WORKER_FEATURE_FLAG_ENV, raising=False)
+
+
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
     root = tmp_path / "p2-project"
@@ -46,6 +53,7 @@ def worker_env(
     tmp_path: Path, dsh_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Path:
     launcher = write_fake_launcher(tmp_path)
+    monkeypatch.setenv(worker_catalog.WORKER_FEATURE_FLAG_ENV, "1")
     monkeypatch.setenv("LOOPX_DSH_CODING_WORKER_BIN", str(launcher))
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
     monkeypatch.setenv("FAKE_DSH_MODE", "ok")
@@ -121,7 +129,9 @@ def _preview_and_apply(
 
 def test_catalog_lists_the_builtin_worker() -> None:
     catalog = worker_catalog.worker_catalog_projection(
-        workspace="/tmp", environment={}, authorized_workspaces=["/tmp"]
+        workspace="/tmp",
+        environment={worker_catalog.WORKER_FEATURE_FLAG_ENV: "1"},
+        authorized_workspaces=["/tmp"],
     )
 
     assert catalog["schema_version"] == worker_catalog.WORKER_CATALOG_SCHEMA_VERSION
@@ -132,6 +142,34 @@ def test_catalog_lists_the_builtin_worker() -> None:
 
 def test_unregistered_worker_resolves_to_none() -> None:
     assert worker_catalog.resolve_worker("nope", environment={}) is None
+
+
+def test_worker_capability_is_disabled_by_default() -> None:
+    """Ships dark: no env, no worker, and a reason that says why."""
+
+    assert worker_catalog.coding_worker_enabled({}) is False
+    assert worker_catalog.resolve_worker(WORKER_ENDPOINT_ID, environment={}) is None
+    assert (
+        worker_catalog.worker_unavailable_reason(WORKER_ENDPOINT_ID, environment={})
+        == "feature_flag_disabled"
+    )
+    catalog = worker_catalog.worker_catalog_projection(
+        workspace="/tmp", environment={}, authorized_workspaces=["/tmp"]
+    )
+    assert catalog["workers"] == []
+    assert catalog["feature_flag"]["enabled"] is False
+
+
+@pytest.mark.parametrize("value", ["0", "false", "off", "", "no", "enabled"])
+def test_only_a_truthy_flag_enables_the_capability(value: str) -> None:
+    """An unrecognised value must not enable it; rollback clears the flag."""
+
+    assert worker_catalog.coding_worker_enabled({worker_catalog.WORKER_FEATURE_FLAG_ENV: value}) is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_truthy_flag_enables_the_capability(value: str) -> None:
+    assert worker_catalog.coding_worker_enabled({worker_catalog.WORKER_FEATURE_FLAG_ENV: value}) is True
 
 
 def test_unknown_executor_route_is_rejected() -> None:
@@ -149,7 +187,7 @@ def test_executor_route_defaults_to_the_chat_agent() -> None:
 def test_workspace_outside_the_authorized_roots_is_refused(tmp_path: Path) -> None:
     descriptor = worker_catalog.resolve_worker(
         WORKER_ENDPOINT_ID,
-        environment={},
+        environment={worker_catalog.WORKER_FEATURE_FLAG_ENV: "1"},
         authorized_workspaces=[tmp_path / "allowed"],
     )
 
@@ -177,7 +215,10 @@ def test_unavailable_binary_makes_the_worker_not_ready(
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
     descriptor = worker_catalog.resolve_worker(
         WORKER_ENDPOINT_ID,
-        environment={"LOOPX_DSH_CODING_WORKER_BIN": str(tmp_path / "absent-dsh")},
+        environment={
+            worker_catalog.WORKER_FEATURE_FLAG_ENV: "1",
+            "LOOPX_DSH_CODING_WORKER_BIN": str(tmp_path / "absent-dsh"),
+        },
         authorized_workspaces=[tmp_path],
     )
 
@@ -351,6 +392,7 @@ def test_worker_route_requires_an_available_worker(
 ) -> None:
     """A configured-but-unhealthy worker is refused, not silently admitted."""
 
+    monkeypatch.setenv(worker_catalog.WORKER_FEATURE_FLAG_ENV, "1")
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
     monkeypatch.setenv(
         "LOOPX_DSH_CODING_WORKER_BIN", str(tmp_path / "no-such-dsh")
@@ -371,3 +413,48 @@ def test_worker_route_requires_an_available_worker(
 
     # Fail closed: no Goal is created when the worker cannot execute.
     assert "p2-unavailable" not in _goals(registry)
+
+
+def test_worker_route_is_refused_while_the_capability_is_dark(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default-off must refuse the route with a reason naming the opt-in.
+
+    This is the rollback guarantee: with the flag cleared, no Goal can be
+    created against the Coding Worker, and the operator sees why.
+    """
+
+    monkeypatch.delenv(worker_catalog.WORKER_FEATURE_FLAG_ENV, raising=False)
+    service, registry = _service(project, tmp_path)
+
+    with pytest.raises(ValueError, match="disabled on this machine"):
+        _preview_and_apply(
+            service,
+            {
+                "goal_id": "p4-dark-goal",
+                "title": "Dark worker",
+                "executor_route": worker_catalog.EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
+                "worker_endpoint_id": WORKER_ENDPOINT_ID,
+            },
+            "p4-dark",
+        )
+
+    assert "p4-dark-goal" not in _goals(registry)
+
+
+def test_chat_agent_route_still_works_while_the_capability_is_dark(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rolling the worker back must not disturb the existing Chat route."""
+
+    monkeypatch.delenv(worker_catalog.WORKER_FEATURE_FLAG_ENV, raising=False)
+    service, registry = _service(project, tmp_path)
+
+    applied = _preview_and_apply(
+        service,
+        {"goal_id": "p4-chat-goal", "title": "Chat still works", "agent_id": "codex"},
+        "p4-chat",
+    )
+
+    assert applied["status"] == "applied"
+    assert _goals(registry)["p4-chat-goal"]["executor_route"] == "chat_agent"
