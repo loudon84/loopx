@@ -61,6 +61,14 @@ for (const decision of ["approve", "reject", "cancel"]) {
 }
 assert.doesNotMatch(attentionActions, /previewDecision\([^)]*"defer"/, "Deferring records no decision, so the drawer does not offer it as one");
 assert.match(attentionActions, /canDecideAttention\(attention\)/, "Only a typed User gate can be decided from the drawer");
+// LoopX binds a gate's decision to an exact agent and the canonical owner
+// rejects any other actor, so the drawer must read the gate's own binding
+// rather than an unrelated default agent.
+assert.match(
+  attentionActions,
+  /blocksAgent \?\? item\.details\?\.boundAgent/,
+  "A gate carrying only bound_agent still acts as its authoritative actor",
+);
 for (const operation of ["complete", "defer", "cancel"]) {
   assert.match(attentionActions, new RegExp(`previewUserAction\\(item, "${operation}"`), `User action ${operation} uses a typed preview`);
 }
