@@ -34,7 +34,7 @@ from loopx.control_plane.goals.activation_service import set_goal_activation_sta
 from loopx.control_plane.coordination.local_authority import LocalCoordinationAuthorityUnavailable
 from loopx.control_plane.todos.provider_create import create_canonical_todo_if_promoted
 
-from .canonical_authority_fixture import promoted_create_fixture
+from canonical_authority_fixture import promoted_create_fixture
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 GOAL_REF_INSTANCE = f"ginst_{'a' * 32}"

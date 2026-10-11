@@ -88,6 +88,27 @@ $ loopx … goal-closeout inspect --goal-id ges-dsh-skills-integration-goal
 2. 跨端一致性验证（CLI / Web / Hermes）
 3. Canary 与部署报告（P5）
 
-## 6. 本机环境限制（沿用）
+## 6. 已解决：本机环境限制（2026-10-11 补跑）
 
-`pytest`、`tsc` 仍未安装：第 3 节 24 项来自与提交测试**同一 facade / 同一 fixture / 同一断言**的等价证据脚本；`pytest` 文件已同步加入对应用例但本机无法执行。
+原先记录的 `pytest` / `tsc` 缺失已消除：
+
+```bash
+npm install --no-audit --no-fund        # 73 packages, node_modules/ 已被 gitignore
+python -m pip install pytest            # pytest 9.1.1（loopx venv）
+npm run typecheck:control-plane         # tsc exit=0
+python -m pytest tests/control_plane/test_goal_closeout_cli.py -q
+                                        # 6 passed in 2.03s
+npm run test:control-plane              # 4378 tests / 4342 pass / 0 fail / 36 skipped
+```
+
+| 检查 | 结果 |
+|---|---|
+| `tsc --project tsconfig.control-plane.json --noEmit` | **exit=0**（类型检查通过） |
+| `pytest tests/control_plane/test_goal_closeout_cli.py` | **6 passed** |
+| `npm run test:control-plane`（全量 TS control plane） | **4378 / 4342 pass / 0 fail / 36 skipped** |
+
+修正记录的要点：
+- 提交的 pytest 文件原先用相对导入 `from .canonical_authority_fixture import ...` 会在收集期报 `ImportError`；本仓库约定是**扁平导入**（`from canonical_authority_fixture import ...`，由 `tests/conftest.py` 处理路径）——已修正并实测通过。
+- 全量套件含此前因缺 `node_modules` 而无法加载的 `pg` 相关测试，现已可解析；**0 fail**。
+
+因此早期报告中「本节 24/24 来自等价证据脚本、pytest 无法执行」的限制**不再适用**：这些断言现在由真实 pytest 与全量 TS 套件覆盖。
