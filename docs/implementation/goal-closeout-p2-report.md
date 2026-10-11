@@ -76,7 +76,7 @@ $ loopx --registry /data/github/ges-delivery/.loopx/registry.json --format json 
 | AC | 状态 | 说明 |
 |---|---|---|
 | AC-01 | ✅ 部分 | 两个 Goal entry 构建点统一经 `ensure_goal_closeout_policy()`；调用方无法降级/伪造策略。Web `goal.create` 的最终兜底与跨入口一致性 hook test 属剩余工作 |
-| AC-09 | 🟡 部分 | 权威层已拒绝重复 prepare/confirm（`closeout_already_completed`，P1）。**quota should-run / turn run-once / Host Loop / Todo 写路径的终态拒绝尚未接入** —— 见 §5 |
+| AC-09 | 🟡 部分 | **Todo 写路径已完成**：`claim / create / update / terminal lifecycle` 四个权威层入口在 completed 时一律拒绝（`closeout_already_completed`），读路径不受影响。剩余：quota should-run / turn run-once / Host Loop 的终态拒绝 —— 见 §8 |
 | AC-11 | ✅ | completed 时 stop 与 resume 均被拒（`goal_already_completed`），非终态 Goal 行为不变 |
 | AC-18 | ✅ | P1 已证 `vision_closed` 不产生 completed |
 
@@ -105,3 +105,43 @@ $ loopx --registry /data/github/ges-delivery/.loopx/registry.json --format json 
 ## 7. 观察（非本次改动）
 
 真实 GES Goal 当前 `activation_state=stopped`（`goal-lifecycle` 预览显示 `before_state: stopped`）。该状态不是我这两阶段写入的，仅记录事实。
+
+## 8. P2 收尾（第二次提交）
+
+### 8.1 AC-09 权威层（Todo 写路径）
+
+`local_authority_runtime.ts` 新增 `completedGoalTodoWriteRejection()`，并在四个 canonical Todo 写入口的 head 读取后、任何变更前调用：
+
+| 入口 | action |
+|---|---|
+| `claimLocalCoordinationTodo` | Todo claim |
+| `createLocalCoordinationTodo` | Todo create |
+| `updateLocalCoordinationTodo` | Todo update |
+| `terminalLifecycleLocalCoordinationTodo` | Todo terminal lifecycle |
+
+读路径（`pollLocalCoordinationMonitor` / `observeLocalCoordinationOwnership`）与归档记账（`archiveLocalCoordinationTodos`）**不设门禁** —— 历史必须仍可读、可归档。
+
+旧版 Host 或直接 RPC 调用方即使不认识 Closeout，也无法重开已 completed Goal 的 Todo 计划；Python provider 层把它转成 `LocalCoordinationAuthorityUnavailable`。
+
+### 8.2 证据
+
+```
+== AC-09: completed Goal refuses Todo writes at the provider layer ==
+  PASS  Todo create is refused on a completed Goal
+ALL 16 CHECKS PASSED
+```
+
+真实异常文本：`LocalCoordinationAuthorityUnavailable: Goal goal-a is completed; Todo create is refused on a completed Goal`
+
+回归（10 个 TS 套件，含本地权威运行时 / provider / archive / receipt / Todo 完成与归档 / 公共更新）：
+
+```
+ℹ tests 137   ℹ pass 137   ℹ fail 0   ℹ cancelled 0
+```
+
+### 8.3 仍未完成（下一阶段）
+
+1. **AC-09 剩余**：`quota should-run`、`turn run-once`、`dsh_goal_mode/governed_turn_loop.py` 的终态停止（Python 侧纵深防御）
+2. **AC-01 剩余**：Web `goal.create` 兜底与跨入口一致性 hook test
+3. **AC-10 / AC-15**（P3）、**AC-12 / AC-13 / AC-19**（P4）、**AC-20 完整**（旧写入路径负向回归）
+

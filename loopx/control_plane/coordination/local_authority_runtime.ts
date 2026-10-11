@@ -1014,6 +1014,30 @@ export async function promoteLocalCoordinationAuthority(
 }
 
 /** Local provider adapter for the provider-neutral Todo claim transaction. */
+/**
+ * AC-09: a completed Goal is terminal at the authoritative layer.
+ *
+ * Every canonical Todo write path refuses here, so an older Host or a direct
+ * RPC caller that predates Goal Closeout still cannot reopen a completed Goal's
+ * Todo plan. Reads (poll / monitor / observe) are never gated.
+ */
+function completedGoalTodoWriteRejection(
+  loaded: unknown,
+  goalId: string,
+  action: string,
+): JsonObject | null {
+  const head = (loaded as {head?: {goal_closeout?: unknown}} | null)?.head;
+  const closeout = (head?.goal_closeout ?? null) as {state?: unknown} | null;
+  if (!closeout || closeout.state !== "completed") return null;
+  return {
+    status: "failed",
+    executed: false,
+    reason_code: "closeout_already_completed",
+    reason: `Goal ${goalId} is completed; ${action} is refused on a completed Goal`,
+    legacy_fallback_used: false,
+  };
+}
+
 export async function claimLocalCoordinationTodo(
   value: unknown,
   dependencies: LocalAuthorityRuntimeDependencies = {},
@@ -1035,6 +1059,10 @@ export async function claimLocalCoordinationTodo(
     return await withCanonicalWriter(root, goalId, input.dry_run === true, async () => {
       const store = await openRuntimeStore(root, goalId, dependencies);
       sourceAuthority = sourceAuthorityFor(store);
+      const terminal = completedGoalTodoWriteRejection(
+        await store.loadAuthority(), goalId, "Todo claim",
+      );
+      if (terminal) return terminal;
       if (!Array.isArray(input.registered_agents)) {
         throw new Error("registered_agents must be a JSON array");
       }
@@ -1124,6 +1152,10 @@ export async function createLocalCoordinationTodo(
       const store = await openRuntimeStore(root, goalId, dependencies);
       sourceAuthority = sourceAuthorityFor(store);
       providerEvidence.source_authority = sourceAuthority;
+      const terminal = completedGoalTodoWriteRejection(
+        await store.loadAuthority(), goalId, "Todo create",
+      );
+      if (terminal) return terminal;
       if (!Array.isArray(input.registered_agents)) {
         throw new TypeError("registered_agents must be a JSON array");
       }
@@ -1216,6 +1248,10 @@ export async function updateLocalCoordinationTodo(
       const store = await openRuntimeStore(root, goalId, dependencies);
       sourceAuthority = sourceAuthorityFor(store);
       providerEvidence.source_authority = sourceAuthority;
+      const terminal = completedGoalTodoWriteRejection(
+        await store.loadAuthority(), goalId, "Todo update",
+      );
+      if (terminal) return terminal;
       return {...await executeCoordinationTodoUpdate(store, {
         goal_id: goalId, todo_id: requireAuthorityStoreId(input.todo_id, "todo id"),
         expected_role: input.role === null || input.role === undefined ? null :
@@ -1299,6 +1335,10 @@ export async function terminalLifecycleLocalCoordinationTodo(
       const store = await openRuntimeStore(root, goalId, dependencies);
       sourceAuthority = sourceAuthorityFor(store);
       providerEvidence.source_authority = sourceAuthority;
+      const terminal = completedGoalTodoWriteRejection(
+        await store.loadAuthority(), goalId, "Todo terminal lifecycle",
+      );
+      if (terminal) return terminal;
       return {...await executeCoordinationTodoTerminalLifecycle(store, {
         validation_source_provider_revision: input.validation_source_provider_revision == null
           ? null : requireAuthorityStoreId(input.validation_source_provider_revision, "validation source provider revision"),

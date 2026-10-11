@@ -27,6 +27,8 @@ from loopx.control_plane.goals.acceptance import (
     verify_goal_acceptance,
 )
 from loopx.control_plane.goals.activation_service import set_goal_activation_state
+from loopx.control_plane.coordination.local_authority import LocalCoordinationAuthorityUnavailable
+from loopx.control_plane.todos.provider_create import create_canonical_todo_if_promoted
 
 from .canonical_authority_fixture import promoted_create_fixture
 
@@ -162,6 +164,15 @@ def test_completed_goal_refuses_stop_and_resume(tmp_path, provider):
                 registry_path=registry_path, goal_id="goal-a", state=state,
                 runtime_root_override=str(runtime_root), execute=False,
             )
+
+    # AC-09: the canonical Todo write paths refuse a completed Goal, so an older
+    # Host that predates Closeout still cannot reopen its Todo plan.
+    with pytest.raises(LocalCoordinationAuthorityUnavailable, match="is completed"):
+        create_canonical_todo_if_promoted(
+            registry_path=registry_path, runtime_root=runtime_root, goal_id="goal-a",
+            role="agent", text="must be refused", status="open", actor_agent_id="agent-a",
+            claimed_by=None, metadata={}, dry_run=False, operation_id="ac09-create-attempt",
+        )
 
 
 def _agent_confirm(registry_path: Path, runtime_root: Path) -> None:
