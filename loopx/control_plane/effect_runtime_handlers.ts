@@ -371,6 +371,10 @@ export function createEffectRuntimeHandlers(
     ["goal.acceptance.configure", lazyHandler(() => import("./goals/acceptance_authority.ts"), ({commitLocalGoalAcceptance}) => commitLocalGoalAcceptance)],
     ["goal.acceptance.verify.commit", lazyHandler(() => import("./goals/acceptance_authority.ts"), ({commitLocalGoalAcceptanceVerification}) => commitLocalGoalAcceptanceVerification)],
     ["goal.acceptance.lifecycle.transition", lazyHandler(() => import("./goals/acceptance_authority.ts"), ({commitLocalGoalAcceptanceLifecycleTransition}) => commitLocalGoalAcceptanceLifecycleTransition)],
+    ["goal.closeout.inspect", lazyHandler(() => import("./goals/closeout_authority.ts"), ({inspectLocalGoalCloseout}) => inspectLocalGoalCloseout)],
+    ["goal.closeout.prepare", lazyHandler(() => import("./goals/closeout_authority.ts"), ({prepareLocalGoalCloseout}) => prepareLocalGoalCloseout)],
+    ["goal.closeout.confirm", lazyHandler(() => import("./goals/closeout_authority.ts"), ({confirmLocalGoalCloseout}) => confirmLocalGoalCloseout)],
+    ["goal.closeout.history", lazyHandler(() => import("./goals/closeout_authority.ts"), ({readLocalGoalCloseoutHistory}) => readLocalGoalCloseoutHistory)],
     ["agent.delivery_workspace.evaluate", lazyHandler(() => import("./agents/delivery_workspace.ts"), ({evaluateDeliveryWorkspace}) => evaluateDeliveryWorkspace)],
     [
       "quota.delivery_workspace_causality.evaluate",
