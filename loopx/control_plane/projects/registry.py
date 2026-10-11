@@ -14,6 +14,7 @@ from ...paths import (
 )
 from ..runtime.document_io import atomic_write_state_text as _atomic_write_text
 from ..coordination.legacy_writer_fence import legacy_todo_write_transaction, require_legacy_state_replacement_allowed
+from ..goals.closeout import ensure_goal_closeout_policy
 from ..goals.source_session_services import (
     FreshSourceSessionRegistration,
     RecreateGoalRequest,
@@ -207,6 +208,9 @@ def register_project_goal(
     )
     goal_record["project_id"] = project_id
     goal_record["objective"] = objective
+    # AC-01: every Goal registration entry stamps the server-owned Closeout
+    # policy, so no caller can create a Goal outside the strict closeout rules.
+    ensure_goal_closeout_policy(goal_record)
     goal_record["brief"] = {
         "non_goals": non_goals,
         "acceptance": acceptance,

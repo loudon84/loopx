@@ -5,6 +5,7 @@ from uuid import uuid4
 from pathlib import Path
 
 from .capabilities.machine_configuration.goal_storage import new_goal_storage_target, initialize_goal_storage_target
+from .control_plane.goals.closeout import ensure_goal_closeout_policy
 from .registry import find_registry_goal
 from .control_plane.coordination.legacy_writer_fence import legacy_todo_write_transaction, require_legacy_state_replacement_allowed
 from .control_plane.coordination.legacy_writer_fence import require_registry_source_write_allowed
@@ -238,7 +239,7 @@ def build_goal_entry(
         "kind": adapter_kind,
         "status": adapter_status,
     }
-    return {
+    return ensure_goal_closeout_policy({
         "id": goal_id,
         **({"display_name": display_name} if display_name else {}),
         # Additive executor routing. Omitted entirely for Chat-agent Goals, so
@@ -283,7 +284,7 @@ def build_goal_entry(
             "do not mutate production systems without explicit user approval",
             "keep private evidence out of public commits",
         ],
-    }
+    })
 
 
 def merge_goal(registry: dict[str, Any], goal_entry: dict[str, Any], *, force: bool) -> tuple[dict[str, Any], str]:

@@ -248,6 +248,7 @@ export async function prepareGoalCloseout(
       basis: evaluation.basis as unknown as JsonObject,
       basis_digest: closeoutBasisDigest(evaluation.basis),
       acceptance_receipt_id: acceptanceReceiptId,
+      goal_closeout: projectGoalCloseout({...head.head, goal_closeout: next as unknown as JsonObject}, goalId),
     }}],
   });
   return source(store, committed);
@@ -363,6 +364,8 @@ export async function confirmGoalCloseout(
       state: "completed",
       completion_receipt_id: completionReceiptId,
       owner_principal_id: principal,
+      basis_digest: closeoutBasisDigest(evaluation.basis),
+      goal_closeout: projectGoalCloseout({...head.head, goal_closeout: next as unknown as JsonObject}, goalId),
     }}],
   });
   return source(store, committed);

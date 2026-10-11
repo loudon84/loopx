@@ -23,6 +23,7 @@ from .activation import (
     normalize_goal_activation_state,
 )
 from ..content_digest import BARE_SHA256_PATTERN
+from .closeout import goal_closeout_completed
 from .configure_goal_service import resolve_configure_goal_sync_target
 
 
@@ -271,6 +272,18 @@ def set_goal_activation_state(
     source_registry = authority_route.source_registry
     target_registry = authority_route.target_registry
     sync_runtime_root = authority_route.sync_runtime_root
+    # AC-11: `completed` is terminal. Stop and resume stay reversible pauses for
+    # non-terminal Goals; neither may change a completed Goal's eligibility, and
+    # neither may manufacture a completion.
+    if goal_closeout_completed(
+        registry_path=registry_path,
+        goal_id=normalized_goal_id,
+        runtime_root=str(sync_runtime_root) if sync_runtime_root is not None else None,
+    ):
+        raise ValueError(
+            f"goal_already_completed: Goal {normalized_goal_id} holds a canonical completed "
+            "Closeout; stop/resume cannot change its execution eligibility"
+        )
     registries_are_distinct = not _same_path(source_registry, target_registry)
     source_identity = _goal_activation_source_identity(source_registry)
     target_source_identity = (

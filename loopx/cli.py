@@ -187,6 +187,10 @@ from .cli_commands.goal_acceptance import (
     handle_goal_acceptance_command,
     register_goal_acceptance_command,
 )
+from .cli_commands.goal_closeout import (
+    handle_goal_closeout_command,
+    register_goal_closeout_command,
+)
 from .cli_commands.goal_amendment_proposal import (
     handle_goal_amendment_proposal_command,
     register_goal_amendment_proposal_command,
@@ -380,6 +384,7 @@ def build_parser() -> LoopXArgumentParser:
     register_handoff_mode_command(sub, add_subcommand_format)
     register_shared_goal_alignment_command(sub, add_subcommand_format)
     register_goal_acceptance_command(sub, add_subcommand_format)
+    register_goal_closeout_command(sub, add_subcommand_format)
     register_goal_amendment_proposal_command(sub, add_subcommand_format)
     register_quota_command(sub)
 
@@ -939,6 +944,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     if goal_acceptance_result is not None:
         return goal_acceptance_result
+
+    goal_closeout_result = handle_goal_closeout_command(
+        args, registry_path=registry_path, runtime_root_arg=args.runtime_root,
+        output_format=output_format, print_payload=print_payload,
+    )
+    if goal_closeout_result is not None:
+        return goal_closeout_result
 
     shared_goal_alignment_result = handle_shared_goal_alignment_command(
         args,
