@@ -63,10 +63,30 @@ $ loopx … goal-closeout inspect --goal-id ges-dsh-skills-integration-goal
 
 ## 5. 下一步（P3 剩余）
 
-1. **AC-10 接线**：让完成动作产生携带 `goal_closeout_completed` 的运行记录（或让 status 投影直接读 canonical closeout 并产出 `completed` 桶）
-2. **AC-10 端到端证据**：构造「completed + 之后一次失败 Run」→ 断言 Web 投影为已完成且不被翻回；同时断言未解决的当前风险仍出现
-3. **AC-15**：Global Registry 写入失败 → canonical completed 仍生效 → 下次投影幂等补偿且不产生第二次执行
-4. 跨端一致性验证（CLI / Web / Hermes）
+### 5.1 AC-10 接线的落点（已勘查，未实施）
+
+| 事实 | 位置 |
+|---|---|
+| 状态**词表**是 7 元组且无终态桶 | `control_plane/quota/states.py:7` `QUOTA_STATE_ORDER = (blocked_health, operator_gate, focus_wait, eligible, waiting, throttled, paused)` |
+| 动作枚举同样无终态 | `control_plane/quota/effective_action.py:41`（含 `BLOCKED_HEALTH` 等） |
+| 「哪些 Run 驱动状态」的闸门 | `history.latest_status_run` ← 本轮已中性化 ✅ |
+| 状态**生产者** | `control_plane/quota/should_run_prepare.py`（500+ 行）与 `should_run_packet.py`（1200+ 行）内的 plan 构造 |
+| 硬暂停已有先例 | `build_quota_paused_should_run_payload`（P2 已复用） |
+| 完成态入口 | `build_quota_should_run`（P2 已加终态拒绝，返回暂停投影） |
+
+**为什么这轮没做**：AC-10 的接线必须动 `QUOTA_STATE_ORDER` 这个词表及其生产者，而 `should_run_prepare.py` / `should_run_packet.py` 是 status、quota、调度、Web 共读的核心。本会话上下文已接近耗尽，不足以支撑「改词表 + 接生产者 + 跑回归 + 验证」这一整轮。按既定标准（不接受未经验证的"已完成"），此处停手并留档，而不是赌一把核心状态机。
+
+**下一轮的具体动作**（按序）：
+1. `QUOTA_STATE_ORDER` 增加终态桶 `completed`（置于末尾）并同步 `effective_action` 枚举
+2. 在 plan 生产处读取 canonical closeout：completed → 该桶（**优先于** health/repair 派生）
+3. 证据：构造「completed + 之后一次失败 Run」→ 断言 Web 投影为已完成、不被翻回，且未解决的当前风险仍出现
+4. 再验 `latest_status_run` 与 `QUOTA_STATE_ORDER` 的消费方（status 计数、scheduler 推荐）无回归
+
+### 5.2 其余
+
+1. **AC-15**：Global Registry 写入失败 → canonical completed 仍生效 → 下次投影幂等补偿且不产生第二次执行
+2. 跨端一致性验证（CLI / Web / Hermes）
+3. Canary 与部署报告（P5）
 
 ## 6. 本机环境限制（沿用）
 
