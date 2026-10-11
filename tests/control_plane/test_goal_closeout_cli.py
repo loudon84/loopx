@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from loopx.control_plane.goals.closeout import (
+    GOAL_CLOSEOUT_COMPLETED_CLASSIFICATION,
     GOAL_CLOSEOUT_POLICY_STRICT_V1,
     confirm_goal_closeout,
     ensure_goal_closeout_policy,
@@ -61,6 +62,23 @@ def test_stamp_goal_closeout_policy_covers_every_goal_without_raising():
     # A malformed record is skipped, never raised: this runs inside every
     # registry transaction.
     assert payload["goals"][2]["coordination"] == "not-an-object"
+
+
+def test_completion_classification_cannot_flip_a_completed_goal_back():
+    """AC-10: the completion run is status neutral, current risks still surface."""
+    from loopx.history import STATUS_NEUTRAL_CLASSIFICATIONS, latest_status_run
+
+    assert GOAL_CLOSEOUT_COMPLETED_CLASSIFICATION in STATUS_NEUTRAL_CLASSIFICATIONS
+    closeout_run = {"run_id": "run-closeout", "status": "failed",
+                    "classification": GOAL_CLOSEOUT_COMPLETED_CLASSIFICATION}
+    done_run = {"run_id": "run-before", "status": "done",
+                "classification": "execution_completed"}
+    assert latest_status_run([closeout_run]) is None
+    assert (latest_status_run([closeout_run, done_run]) or {}).get("run_id") == "run-before"
+    # An unresolved current risk must still drive the displayed status.
+    risk_run = {"run_id": "run-risk", "status": "failed",
+                "classification": "run_index_collision"}
+    assert (latest_status_run([risk_run, done_run]) or {}).get("run_id") == "run-risk"
 
 
 def test_every_registration_entry_stamps_the_server_closeout_policy():

@@ -32,6 +32,12 @@ HISTORY_METHOD = "goal.closeout.history"
 #: Server-owned policy. A caller can never downgrade or override it.
 GOAL_CLOSEOUT_POLICY_STRICT_V1 = "strict_v1"
 
+#: Run-history classification recorded when a Goal is completed. It is status
+#: neutral by contract: the completion receipt itself must never be read as a
+#: repairable failure, so a completed Goal cannot fall back to "needs repair"
+#: because of the run that closed it (AC-10).
+GOAL_CLOSEOUT_COMPLETED_CLASSIFICATION = "goal_closeout_completed"
+
 _ACCEPTED_STATUSES = frozenset({"loaded", "applied", "recovered", "replayed", "planned", "no_change"})
 
 
