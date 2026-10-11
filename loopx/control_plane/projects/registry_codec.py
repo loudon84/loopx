@@ -317,6 +317,17 @@ def _require_source_session_writer(document: _ProjectRegistryDocument) -> None:
         )
 
 
+def _stamp_goal_closeout_policy(payload: dict[str, Any]) -> None:
+    """Stamp the server-owned Closeout policy through the goals module.
+
+    Imported lazily: the goals package reaches back into the registry codec, so a
+    module-level import here would close a cycle.
+    """
+    from ..goals.closeout import stamp_goal_closeout_policy
+
+    stamp_goal_closeout_policy(payload)
+
+
 class ProjectRegistryTransaction:
     def __init__(
         self,
@@ -340,6 +351,11 @@ class ProjectRegistryTransaction:
             raise RuntimeError("project registry transaction is already finished")
         if not isinstance(payload, dict):
             raise TypeError("project registry payload must be a JSON object")
+        # AC-01: the server owns the Closeout policy. Every entry point that
+        # persists a project registry - bootstrap, `project register`, Web
+        # `goal.create`, configure-goal, migration - converges on the same strict
+        # policy here, and a caller-supplied value can never downgrade it.
+        _stamp_goal_closeout_policy(payload)
         wrote = not self._existed or payload != self._document.payload
         if not wrote:
             self._finished = True

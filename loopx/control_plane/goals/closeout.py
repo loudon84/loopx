@@ -220,6 +220,28 @@ def goal_closeout_completed_by_root(*, runtime_root: str | Path, goal_id: str) -
     return value.get("state") == "completed"
 
 
+def stamp_goal_closeout_policy(registry_payload: Mapping[str, Any]) -> None:
+    """Force the server-owned Closeout policy on every Goal record in a registry.
+
+    Called from the project-registry commit gateway, so bootstrap, `project
+    register`, Web `goal.create`, configure-goal and migration all converge on
+    the same policy without any of them having to remember to opt in.
+    """
+    goals = registry_payload.get("goals")
+    if not isinstance(goals, list):
+        return
+    for goal in goals:
+        if not isinstance(goal, dict):
+            continue
+        # A malformed coordination block is skipped rather than raised: this runs
+        # inside every registry transaction, and stamping must never turn an
+        # unrelated write into a failure.
+        existing = goal.get("coordination")
+        if existing is not None and not isinstance(existing, dict):
+            continue
+        ensure_goal_closeout_policy(goal)
+
+
 def ensure_goal_closeout_policy(goal_entry: dict[str, Any]) -> dict[str, Any]:
     """Stamp the server-owned Closeout policy on a Goal record, in place.
 

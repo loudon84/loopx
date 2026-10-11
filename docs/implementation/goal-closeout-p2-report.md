@@ -190,4 +190,45 @@ $ loopx --registry /data/github/ges-delivery/.loopx/registry.json quota \
 2. **AC-10 / AC-15**（P3）、**AC-12 / AC-13 / AC-19**（P4）、**AC-20 完整**（旧写入路径负向回归）
 3. Canary 与部署报告（P5）
 
+## 10. P2 收口（第四次提交）：AC-01 单点强制
+
+### 10.1 为什么之前不够
+
+P2 首提交只在两个 Goal entry 构建点（`bootstrap.build_goal_entry`、`register_project_goal`）打策略。但 Web `goal.create` 走的是 `chat_actions.py` → 既不经 `bootstrap`，也不经 `register_project_goal`；审计后确认所有入口真正共用的东西只有一个：**`projects/registry_codec.py` 的 `ProjectRegistryTransaction.commit()`**（`bootstrap`、`project register`、`configure-goal`、`state_migration`、`registry_admin`、`project_uninstall`、`deletion_service`、`activation_service`、`authority.py`、`kunluncode` 全部经它落盘）。
+
+### 10.2 实现
+
+| 落点 | 做法 |
+|---|---|
+| `goals/closeout.py` | 新增 `stamp_goal_closeout_policy(registry_payload)`：遍历 registry 内每个 Goal 记录强制 `strict_v1` |
+| `projects/registry_codec.py` | `ProjectRegistryTransaction.commit()` 在类型校验后、`wrote` 比较前调用 `_stamp_goal_closeout_policy(payload)`（函数内延迟导入避免循环依赖） |
+
+**关键安全判断**：该函数在**每一个** registry 事务里执行，因此畸形记录（非 dict、`coordination` 不是对象）一律**跳过而非抛错** —— 否则一次无关的 registry 写入会被策略层搞崩。
+
+副作用（预期行为）：升级后第一次 registry 事务会顺带把缺策略的 Goal 补齐并落盘一次，这正是 AC-12/AC-13 需要的迁移方向。
+
+### 10.3 证据
+
+```
+== AC-01: the registry commit gateway stamps every Goal ==
+  PASS  every Goal carries strict_v1 after a registry commit
+   (before: [None] -> after: strict_v1 on 1 goal(s))
+ALL 20 CHECKS PASSED
+```
+
+用**真实 GES registry 的副本**过真实 commit 网关：策略从 `None` 变为 `strict_v1`。
+
+真实 CLI 回归：`loopx status`（同为该项目 registry）仍 `ok: true`。
+
+### 10.4 AC-01 状态
+
+✅ **收口**。所有落盘入口经同一 commit 网关强制 `strict_v1`，调用方无法降级或伪造（`ensure_goal_closeout_policy` 无条件覆写）。
+
+### 10.5 剩余
+
+1. **P3**：AC-10 Web 历史投影、AC-15 Global Registry 投影补偿
+2. **P4**：AC-12 / AC-13 / AC-19 老 Goal 迁移与重验
+3. **P5**：AC-20 负向安全回归、Canary、部署报告
+
+
 

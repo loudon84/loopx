@@ -46,6 +46,23 @@ def _bind_goal_instance(registry_path: Path) -> None:
     registry_path.write_text(json.dumps(registry), encoding="utf-8")
 
 
+def test_stamp_goal_closeout_policy_covers_every_goal_without_raising():
+    from loopx.control_plane.goals.closeout import stamp_goal_closeout_policy
+
+    payload = {"goals": [
+        {"id": "a", "coordination": {"closeout_policy": "advisory"}},
+        {"id": "b"},
+        {"id": "c", "coordination": "not-an-object"},
+        "not-a-goal",
+    ]}
+    stamp_goal_closeout_policy(payload)
+    assert payload["goals"][0]["coordination"]["closeout_policy"] == GOAL_CLOSEOUT_POLICY_STRICT_V1
+    assert payload["goals"][1]["coordination"]["closeout_policy"] == GOAL_CLOSEOUT_POLICY_STRICT_V1
+    # A malformed record is skipped, never raised: this runs inside every
+    # registry transaction.
+    assert payload["goals"][2]["coordination"] == "not-an-object"
+
+
 def test_every_registration_entry_stamps_the_server_closeout_policy():
     entry = {"id": "goal-x", "coordination": {"registered_agents": ["agent-a"]}}
     ensure_goal_closeout_policy(entry)
