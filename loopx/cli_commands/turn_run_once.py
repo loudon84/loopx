@@ -14,6 +14,7 @@ from ..capabilities.reward_memory import (
 )
 from ..cli_rollout import append_cli_rollout_event
 from ..control_plane.agents.workspace_guard import capture_delivery_workspace
+from ..control_plane.goals.closeout import goal_closeout_completed
 from ..control_plane.goals.first_party_host_admission import (
     FirstPartyHostGoalAdmission,
 )
@@ -79,6 +80,21 @@ def execute_turn_run_once(
     """Adapt one prepared CLI Turn plan to the bounded Turn driver."""
     execution_started = False
     try:
+        # AC-09: a completed Goal admits no further Turn. The refusal lands before
+        # any plan, lease or journal side effect, so a terminal Goal cannot be
+        # driven even by a caller that ignores the quota decision.
+        closeout_goal_id = str(
+            (goal_ref or {}).get("goal_id") or payload.get("goal_id") or ""
+        ).strip()
+        if closeout_goal_id and goal_closeout_completed(
+            registry_path=registry_path,
+            goal_id=closeout_goal_id,
+            runtime_root=str(runtime_root),
+        ):
+            raise ValueError(
+                f"closeout_already_completed: Goal {closeout_goal_id} is completed; "
+                "no Turn is admitted"
+            )
         project = Path(args.project).expanduser().resolve()
         planned_host = (
             payload.get("host") if isinstance(payload.get("host"), dict) else {}

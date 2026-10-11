@@ -145,3 +145,49 @@ ALL 16 CHECKS PASSED
 2. **AC-01 剩余**：Web `goal.create` 兜底与跨入口一致性 hook test
 3. **AC-10 / AC-15**（P3）、**AC-12 / AC-13 / AC-19**（P4）、**AC-20 完整**（旧写入路径负向回归）
 
+## 9. P2 收尾（第三次提交）：Turn 准入的终态门禁
+
+### 9.1 实现
+
+| 落点 | 做法 |
+|---|---|
+| `goals/closeout.py` | 新增 `goal_closeout_completed_by_root()`：只凭 `runtime_root + goal_id` 做终态判定，不读 registry、不提升 authority、不写入 |
+| `control_plane/quota/should_run.py` | `build_quota_should_run()` 在算出 plan/item 后、任何准入判定前检查终态；命中则返回暂停投影 + `reason_code=closeout_already_completed` |
+| `cli_commands/turn_run_once.py` | `execute_turn_run_once()` 在 `try:` 的第一条语句处拦截，早于任何 plan / lease / journal 副作用 |
+
+设计要点：**Host Loop 每轮都要向 LoopX 申请准入**，所以在 `should_run` 拒绝就等于停掉 `governed_turn_loop`；`turn_run_once` 的门禁是纵深防御，防止绕过 quota 决策的调用方。
+
+### 9.2 证据
+
+```
+== AC-09: a completed Goal admits no Turn ==
+  PASS  runtime-root helper sees the completed Goal
+  PASS  runtime-root helper is False for an unknown Goal
+  PASS  the Turn driver refuses a completed Goal
+ALL 19 CHECKS PASSED
+```
+
+Turn driver 把拒绝收敛成携带 `closeout_already_completed` 的失败 payload（不崩溃）。
+
+真实回归（非终态 Goal 的 quota 路径未受影响，GES goal 仍按其自身 `stopped` 状态 paused）：
+
+```
+$ loopx --registry /data/github/ges-delivery/.loopx/registry.json quota \
+      --goal-id ges-dsh-skills-integration-goal --agent-id dsh-coding-worker-01
+{"ok": true, "states": {"paused": 1, ...}}    ← 无 closeout 相关字段，行为与改动前一致
+```
+
+### 9.3 AC 状态更新
+
+| AC | 状态 |
+|---|---|
+| AC-09 | ✅ **权威层 + 本地门禁均已完成**（Todo 四写路径、quota should-run、Turn driver）。`governed_turn_loop` 无需改动：它每轮都问 LoopX |
+| AC-01 | 🟡 剩 Web `goal.create` 兜底与跨入口 hook test |
+
+### 9.4 仍未完成
+
+1. **AC-01 剩余**：Web `goal.create` 兜底与跨入口一致性 hook test
+2. **AC-10 / AC-15**（P3）、**AC-12 / AC-13 / AC-19**（P4）、**AC-20 完整**（旧写入路径负向回归）
+3. Canary 与部署报告（P5）
+
+

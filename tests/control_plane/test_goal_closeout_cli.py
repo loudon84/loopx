@@ -6,6 +6,7 @@ by a hand-written pass flag.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -17,10 +18,12 @@ from loopx.control_plane.goals.closeout import (
     confirm_goal_closeout,
     ensure_goal_closeout_policy,
     goal_closeout_completed,
+    goal_closeout_completed_by_root,
     inspect_goal_closeout,
     prepare_goal_closeout,
     read_goal_closeout_history,
 )
+from loopx.cli_commands.turn_run_once import execute_turn_run_once
 from loopx.control_plane.goals.acceptance import (
     configure_goal_acceptance,
     inspect_goal_acceptance,
@@ -173,6 +176,21 @@ def test_completed_goal_refuses_stop_and_resume(tmp_path, provider):
             role="agent", text="must be refused", status="open", actor_agent_id="agent-a",
             claimed_by=None, metadata={}, dry_run=False, operation_id="ac09-create-attempt",
         )
+
+    # AC-09: a completed Goal admits no Turn, checked from the runtime root alone.
+    assert goal_closeout_completed_by_root(
+        runtime_root=runtime_root, goal_id="goal-a"
+    ) is True
+    assert goal_closeout_completed_by_root(
+        runtime_root=runtime_root, goal_id="goal-absent"
+    ) is False
+    turn = execute_turn_run_once(
+        argparse.Namespace(), payload={}, registry_path=registry_path,
+        runtime_root=runtime_root, runtime_root_arg=str(runtime_root),
+        goal_ref={"goal_id": "goal-a"}, goal_admission=None, operator_environ={},
+        operator_inbox_urgency_projector=lambda **kwargs: {},
+    )
+    assert "closeout_already_completed" in json.dumps(turn, default=str), turn
 
 
 def _agent_confirm(registry_path: Path, runtime_root: Path) -> None:

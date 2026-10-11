@@ -24,6 +24,7 @@ from ..quota.decision_summary import (
 from ..quota.goal_boundary import (
     registry_goal_by_id as _registry_goal_by_id,
 )
+from ..goals.closeout import goal_closeout_completed_by_root
 from ..quota.projection_repair import build_boundary_projection_repair_hint
 from ..quota.selected_todo_projection import selected_todo_projection
 from ..quota.states import (
@@ -322,6 +323,35 @@ def build_quota_should_run(
         ),
         None,
     )
+    # AC-09: a completed Goal admits no further Turn. The host loop asks LoopX for
+    # admission on every Turn, so refusing here is what stops an older Host that
+    # has no Closeout awareness of its own.
+    if (
+        item is not None
+        and safe_goal_id
+        and runtime_root is not None
+        and goal_closeout_completed_by_root(runtime_root=runtime_root, goal_id=safe_goal_id)
+    ):
+        return {
+            **build_quota_paused_should_run_payload(
+                status_payload,
+                safe_goal_id=safe_goal_id,
+                requested_agent_id=agent_id,
+                item=item,
+                plan=plan,
+                goal_health_ok=goal_health_ok,
+                include_scheduler_detail=include_scheduler_detail,
+                codex_app_current_rrule=codex_app_current_rrule,
+                codex_app_automation_id=codex_app_automation_id,
+                resolved_scheduler_context=resolved_scheduler_context,
+                runtime_root=runtime_root,
+                goal_ref=goal_ref,
+            ),
+            "reason_code": "closeout_already_completed",
+            "reason": (
+                f"Goal {safe_goal_id} is completed; automatic agent turns are closed"
+            ),
+        }
     health_items = (
         plan.get("health_items")
         if isinstance(plan.get("health_items"), list)

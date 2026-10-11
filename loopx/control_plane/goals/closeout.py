@@ -199,6 +199,27 @@ def goal_closeout_completed(
     return inspected.get("state") == "completed"
 
 
+def goal_closeout_completed_by_root(*, runtime_root: str | Path, goal_id: str) -> bool:
+    """Terminal check when only the runtime root is known (no registry read).
+
+    Used by the local gates (quota should-run, Turn driver) that already hold a
+    goal id and a runtime root. Never promotes an authority and never writes.
+    """
+    if not goal_id:
+        return False
+    try:
+        value = effect_runtime_result(INSPECT_METHOD, {
+            "runtime_root": str(Path(runtime_root).resolve()), "goal_id": goal_id})
+    except (ValueError, TypeError, RuntimeError, OSError):
+        return False
+    if not isinstance(value, dict) or value.get("status") in {None, "failed"}:
+        return False
+    projection = value.get("goal_closeout")
+    if isinstance(projection, Mapping):
+        return projection.get("completed") is True
+    return value.get("state") == "completed"
+
+
 def ensure_goal_closeout_policy(goal_entry: dict[str, Any]) -> dict[str, Any]:
     """Stamp the server-owned Closeout policy on a Goal record, in place.
 
