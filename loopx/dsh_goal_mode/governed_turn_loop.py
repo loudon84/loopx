@@ -1,11 +1,11 @@
-"""Governed Turn host loop for the DSH Coding Worker.
+"""Governed Turn host loop for Coding Workers.
 
 What this is
 ------------
 LoopX owns Goal/Todo identity, eligibility, quota, validation and writeback. It
 deliberately does *not* own a timer: for a generic CLI host it expects the host
 to provide the loop that asks "should I run?" and then obeys the answer. This
-module is that loop for the DSH Coding Worker.
+module is that loop for registered Coding Workers (DSH, Codex CLI, Cursor CLI).
 
 What this is not
 ----------------
@@ -30,16 +30,20 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from loopx.control_plane import worker_catalog
+
 LOOP_SCHEMA_VERSION = "loopx_dsh_coding_worker_loop_v1"
 DEFAULT_MAX_TURNS = 8
 DEFAULT_TIMEOUT_SECONDS = 1_800
+DEFAULT_WORKER_ENDPOINT_ID = "dsh-coding-worker-local"
 
 
 class LoopError(RuntimeError):
@@ -78,6 +82,132 @@ class TurnRecord:
 
 def _loopx_bin() -> str:
     return shutil.which("loopx") or "loopx"
+
+
+def _goal_worker_endpoint_id(
+    *,
+    goal_id: str,
+    registry_path: Path | None,
+    explicit: str | None,
+) -> str:
+    """Resolve the worker endpoint for this Goal.
+
+    Explicit CLI/API selection wins. Otherwise the Goal registry value is used.
+    Missing configuration keeps the historical DSH default so existing callers
+    that only pass ``--dsh-runner`` keep working.
+    """
+
+    if explicit and str(explicit).strip():
+        return str(explicit).strip()
+    if registry_path is None or not registry_path.is_file():
+        return DEFAULT_WORKER_ENDPOINT_ID
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_WORKER_ENDPOINT_ID
+    for goal in payload.get("goals") or []:
+        if not isinstance(goal, Mapping):
+            continue
+        if str(goal.get("id") or "") != goal_id:
+            continue
+        endpoint = str(goal.get("worker_endpoint_id") or "").strip()
+        return endpoint or DEFAULT_WORKER_ENDPOINT_ID
+    return DEFAULT_WORKER_ENDPOINT_ID
+
+
+def build_turn_run_once_argv(
+    *,
+    base: Sequence[str],
+    goal_id: str,
+    agent_id: str,
+    project: Path,
+    todo_id: str,
+    turn_instance_id: str,
+    timeout_seconds: float,
+    descriptor: worker_catalog.WorkerDescriptor,
+    dsh_runner: Path | None,
+    dsh_home: Path | None = None,
+    codex_bin: str | None = None,
+    cursor_adapter_command: Sequence[str] | None = None,
+    validation_argv: list[str] | None = None,
+) -> list[str]:
+    """Build one ``turn run-once`` argv for the selected worker endpoint.
+
+    The DSH branch is byte-for-byte compatible with the historical hard-coded
+    argv (same flags, same order) so existing DSH loops keep their regression
+    baseline.
+    """
+
+    turn_argv = list(base) + [
+        "turn",
+        "run-once",
+        "--goal-id",
+        goal_id,
+        "--agent-id",
+        agent_id,
+        "--host",
+        descriptor.turn_host,
+        "--project",
+        str(project),
+        "--todo-id",
+        todo_id,
+        "--turn-instance-id",
+        turn_instance_id,
+    ]
+    if descriptor.turn_host == worker_catalog.TURN_HOST_DSH:
+        if dsh_runner is None:
+            raise LoopError(
+                "DSH Coding Worker requires --dsh-runner for turn run-once"
+            )
+        turn_argv += [
+            "--dsh-runner",
+            str(dsh_runner),
+            "--timeout-seconds",
+            str(int(timeout_seconds)),
+        ]
+        if dsh_home is not None:
+            turn_argv += ["--dsh-home", str(dsh_home)]
+    elif descriptor.turn_host == worker_catalog.TURN_HOST_CODEX_CLI:
+        turn_argv += [
+            "--timeout-seconds",
+            str(int(timeout_seconds)),
+        ]
+        if codex_bin:
+            turn_argv += ["--codex-bin", str(codex_bin)]
+        elif descriptor.command:
+            turn_argv += ["--codex-bin", str(descriptor.command[0])]
+    elif descriptor.turn_host == worker_catalog.TURN_HOST_GENERIC_CLI:
+        adapter = list(cursor_adapter_command or ())
+        if not adapter:
+            if descriptor.worker_kind == worker_catalog.WORKER_KIND_CURSOR_CLI_CODING_WORKER:
+                adapter = [
+                    sys.executable,
+                    "-m",
+                    "loopx.cursor_worker.turn_host_adapter",
+                ]
+            else:
+                raise LoopError(
+                    "generic-cli Coding Worker requires an adapter command "
+                    "(--cursor-adapter-command-json)"
+                )
+        turn_argv += [
+            "--host-adapter-command-json",
+            json.dumps(adapter),
+            "--timeout-seconds",
+            str(int(timeout_seconds)),
+        ]
+    else:
+        raise LoopError(f"unsupported turn_host: {descriptor.turn_host!r}")
+
+    if validation_argv:
+        turn_argv += [
+            "--validation-command-json",
+            json.dumps(validation_argv),
+            "--validation-timeout-seconds",
+            "300",
+        ]
+    turn_argv.append("--execute")
+    return turn_argv
 
 
 def _run_cli(
@@ -350,13 +480,16 @@ def run_host_loop(
     goal_id: str,
     agent_id: str,
     project: Path,
-    dsh_runner: Path,
+    dsh_runner: Path | None = None,
     validation_argv: list[str] | None = None,
     validation_by_todo: dict[str, list[str]] | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     registry_path: Path | None = None,
     dsh_home: Path | None = None,
+    worker_endpoint_id: str | None = None,
+    codex_bin: str | None = None,
+    cursor_adapter_command: Sequence[str] | None = None,
     lease_key_prefix: str = "host-loop-lease",
     lease_version: int = 1,
     dry_run: bool = False,
@@ -367,13 +500,32 @@ def run_host_loop(
     ``cancel`` is any object with ``is_set()`` (a ``threading.Event``). A set
     flag stops the loop before the next Turn is asked for and terminates an
     in-flight ``loopx`` call, so an owner stop never leaves a host running.
+
+    ``worker_endpoint_id`` selects the Coding Worker. When omitted, the Goal
+    registry value is used, falling back to the historical DSH endpoint.
     """
 
     project = project.expanduser().resolve()
-    dsh_runner = dsh_runner.expanduser().resolve()
+    if dsh_runner is not None:
+        dsh_runner = dsh_runner.expanduser().resolve()
     base = [_loopx_bin(), "--format", "json"]
     if registry_path is not None:
         base += ["--registry", str(registry_path)]
+
+    endpoint_id = _goal_worker_endpoint_id(
+        goal_id=goal_id,
+        registry_path=registry_path,
+        explicit=worker_endpoint_id,
+    )
+    descriptor = worker_catalog.resolve_worker(
+        endpoint_id,
+        authorized_workspaces=[project],
+        require_enabled=False,
+    )
+    if descriptor is None:
+        raise LoopError(
+            f"Coding Worker endpoint is not registered: {endpoint_id}"
+        )
 
     turns: list[TurnRecord] = []
     host_invocations = 0
@@ -482,37 +634,22 @@ def run_host_loop(
 
         # 3. Execute exactly one governed Turn. LoopX invokes the host, runs the
         #    independent validator, and commits only on a passing result.
-        turn_argv = base + [
-            "turn",
-            "run-once",
-            "--goal-id",
-            goal_id,
-            "--agent-id",
-            agent_id,
-            "--host",
-            "dsh",
-            "--project",
-            str(project),
-            "--todo-id",
-            todo_id,
-            "--turn-instance-id",
-            turn_instance_id,
-            "--dsh-runner",
-            str(dsh_runner),
-            "--timeout-seconds",
-            str(int(timeout_seconds)),
-        ]
-        if dsh_home is not None:
-            turn_argv += ["--dsh-home", str(dsh_home)]
         turn_validation = _validation_for(todo_id)
-        if turn_validation:
-            turn_argv += [
-                "--validation-command-json",
-                json.dumps(turn_validation),
-                "--validation-timeout-seconds",
-                "300",
-            ]
-        turn_argv.append("--execute")
+        turn_argv = build_turn_run_once_argv(
+            base=base,
+            goal_id=goal_id,
+            agent_id=agent_id,
+            project=project,
+            todo_id=todo_id,
+            turn_instance_id=turn_instance_id,
+            timeout_seconds=timeout_seconds,
+            descriptor=descriptor,
+            dsh_runner=dsh_runner,
+            dsh_home=dsh_home,
+            codex_bin=codex_bin,
+            cursor_adapter_command=cursor_adapter_command,
+            validation_argv=turn_validation,
+        )
 
         host_invocations += 1
         report = _run_json(
@@ -819,7 +956,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--goal-id", required=True)
     parser.add_argument("--agent-id", required=True)
     parser.add_argument("--project", required=True)
-    parser.add_argument("--dsh-runner", required=True)
+    parser.add_argument(
+        "--dsh-runner",
+        default=None,
+        help="Required when the selected endpoint uses --host dsh.",
+    )
+    parser.add_argument("--worker-endpoint-id", default=None)
+    parser.add_argument("--codex-bin", default=None)
+    parser.add_argument(
+        "--cursor-adapter-command-json",
+        default=None,
+        help="JSON argv for the Cursor generic-cli adapter.",
+    )
     parser.add_argument("--validation-command-json", default=None)
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
@@ -832,7 +980,7 @@ def main(argv: list[str] | None = None) -> int:
         goal_id=args.goal_id,
         agent_id=args.agent_id,
         project=Path(args.project),
-        dsh_runner=Path(args.dsh_runner),
+        dsh_runner=Path(args.dsh_runner) if args.dsh_runner else None,
         validation_argv=(
             json.loads(args.validation_command_json)
             if args.validation_command_json
@@ -842,6 +990,13 @@ def main(argv: list[str] | None = None) -> int:
         timeout_seconds=args.timeout_seconds,
         registry_path=Path(args.registry) if args.registry else None,
         dsh_home=Path(args.dsh_home) if args.dsh_home else None,
+        worker_endpoint_id=args.worker_endpoint_id,
+        codex_bin=args.codex_bin,
+        cursor_adapter_command=(
+            json.loads(args.cursor_adapter_command_json)
+            if args.cursor_adapter_command_json
+            else None
+        ),
         dry_run=args.dry_run,
     )
     json.dump(outcome.as_dict(), __import__("sys").stdout, ensure_ascii=False, indent=1)

@@ -140,6 +140,48 @@ def test_catalog_lists_the_builtin_worker() -> None:
     ]
 
 
+def test_catalog_lists_each_opted_in_runtime() -> None:
+    catalog = worker_catalog.worker_catalog_projection(
+        workspace="/tmp",
+        environment={
+            worker_catalog.WORKER_FEATURE_FLAG_ENV: "1",
+            worker_catalog.CODEX_WORKER_FEATURE_FLAG_ENV: "1",
+            worker_catalog.CURSOR_WORKER_FEATURE_FLAG_ENV: "1",
+        },
+        authorized_workspaces=["/tmp"],
+    )
+
+    assert [worker["worker_endpoint_id"] for worker in catalog["workers"]] == [
+        "codex-cli-coding-worker-local",
+        "cursor-cli-coding-worker-local",
+        "dsh-coding-worker-local",
+    ]
+    by_id = {worker["worker_endpoint_id"]: worker for worker in catalog["workers"]}
+    assert by_id["dsh-coding-worker-local"]["turn_host"] == "dsh"
+    assert by_id["codex-cli-coding-worker-local"]["turn_host"] == "codex-cli"
+    assert by_id["cursor-cli-coding-worker-local"]["turn_host"] == "generic-cli"
+    assert by_id["cursor-cli-coding-worker-local"]["declared_capabilities"][
+        "model_selection"
+    ] is True
+
+
+def test_codex_flag_does_not_enable_dsh() -> None:
+    assert (
+        worker_catalog.resolve_worker(
+            WORKER_ENDPOINT_ID,
+            environment={worker_catalog.CODEX_WORKER_FEATURE_FLAG_ENV: "1"},
+        )
+        is None
+    )
+    assert (
+        worker_catalog.resolve_worker(
+            "codex-cli-coding-worker-local",
+            environment={worker_catalog.CODEX_WORKER_FEATURE_FLAG_ENV: "1"},
+        )
+        is not None
+    )
+
+
 def test_unregistered_worker_resolves_to_none() -> None:
     assert worker_catalog.resolve_worker("nope", environment={}) is None
 
@@ -230,6 +272,10 @@ def test_unavailable_binary_makes_the_worker_not_ready(
     assert excinfo.value.gate["kind"] == "worker_not_ready"
 
 
+@pytest.mark.skipif(
+    __import__("os").name == "nt",
+    reason="POSIX directory mode bits do not make owner home unwritable on Windows",
+)
 def test_unwritable_dsh_home_makes_the_worker_not_ready(
     tmp_path: Path, worker_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -458,3 +504,93 @@ def test_chat_agent_route_still_works_while_the_capability_is_dark(
 
     assert applied["status"] == "applied"
     assert _goals(registry)["p4-chat-goal"]["executor_route"] == "chat_agent"
+
+
+def test_non_dsh_admission_does_not_call_dsh_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex/Cursor endpoints must never fall through to probe_dsh_cli."""
+
+    calls: list[str] = []
+
+    def _boom(*_args: object, **_kwargs: object) -> dict:
+        calls.append("dsh")
+        raise AssertionError("DSH probe must not run for Codex endpoints")
+
+    monkeypatch.setattr(worker_catalog, "probe_dsh_cli", _boom)
+
+    def _ready(**_kwargs: object) -> dict:
+        calls.append("codex")
+        return {
+            "ready": True,
+            "reason": "ready",
+            "checks": [],
+            "capability": {"capabilities": {"model_selection": True}},
+        }
+
+    monkeypatch.setattr(worker_catalog, "probe_codex_cli", _ready)
+    descriptor = worker_catalog.resolve_worker(
+        "codex-cli-coding-worker-local",
+        environment={worker_catalog.CODEX_WORKER_FEATURE_FLAG_ENV: "1"},
+        authorized_workspaces=[tmp_path],
+    )
+    probe = worker_catalog.admit_worker(
+        descriptor,
+        workspace=tmp_path,
+        endpoint_id="codex-cli-coding-worker-local",
+    )
+    assert probe["ready"] is True
+    assert calls == ["codex"]
+
+
+def test_cursor_missing_binary_is_refused_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(worker_catalog.CURSOR_WORKER_FEATURE_FLAG_ENV, "1")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    descriptor = worker_catalog.resolve_worker(
+        "cursor-cli-coding-worker-local",
+        authorized_workspaces=[tmp_path],
+    )
+    with pytest.raises(worker_catalog.WorkerNotAdmissible) as excinfo:
+        worker_catalog.admit_worker(
+            descriptor,
+            workspace=tmp_path,
+            endpoint_id="cursor-cli-coding-worker-local",
+        )
+    assert excinfo.value.gate["kind"] == "worker_not_ready"
+    assert "binary_not_installed" in str(excinfo.value.gate["reason"])
+
+
+def test_invalid_worker_reasoning_effort_is_rejected_at_preview(
+    tmp_path: Path, worker_env: Path
+) -> None:
+    """An explicit effort the endpoint cannot honour fails before Goal create.
+
+    Uses a hand-written empty registry so preview normalization can be checked
+    without Goal storage bootstrap (EffectRuntime) on constrained hosts.
+    """
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"schema_version": "loopx_registry_v0", "goals": []}))
+    service = ChatActionService(
+        store=ChatActionStore(tmp_path / "actions"), registry_path=registry
+    )
+
+    with pytest.raises(ValueError, match="not supported by this worker endpoint"):
+        service.preview(
+            {
+                "action_kind": "goal.create",
+                "summary": "Create",
+                "context": {},
+                "normalized_parameters": {
+                    "goal_id": "p5-bad-effort",
+                    "title": "Bad effort",
+                    "executor_route": worker_catalog.EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
+                    "worker_endpoint_id": WORKER_ENDPOINT_ID,
+                    "worker_model_default": "deepseek-v4",
+                    "worker_reasoning_effort_default": "not-a-real-effort",
+                },
+                "idempotency_key": "p5-bad-effort",
+            }
+        )

@@ -81,6 +81,23 @@ def _validation_projection(journal: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _model_projection(journal: Mapping[str, Any]) -> dict[str, Any]:
+    """Project the four-segment model evidence without inventing values."""
+
+    package = journal.get("execution_package")
+    package = package if isinstance(package, Mapping) else {}
+    observation = journal.get("execution_observation")
+    observation = observation if isinstance(observation, Mapping) else {}
+    return {
+        "requested": package.get("model_requested"),
+        "resolved": package.get("model_resolved"),
+        "applied": package.get("model_applied"),
+        "observed": observation.get("model_observed"),
+        "source": package.get("model_source"),
+        "observed_unknown_reason": observation.get("model_observed_unknown_reason"),
+    }
+
+
 def project_turn_journal(
     journal: Mapping[str, Any], *, recorded_at: str | None = None
 ) -> dict[str, Any]:
@@ -89,6 +106,8 @@ def project_turn_journal(
     phases = _deep_get(journal, "completed_phases")
     host_failure = _deep_get(journal, "host_failure")
     effects = _deep_get(journal, "recorded_effects") or {}
+    package = journal.get("execution_package")
+    package = package if isinstance(package, Mapping) else {}
     return {
         "schema_version": WORKER_RUN_READBACK_SCHEMA_VERSION,
         "turn_label": _short_turn_label(str(journal.get("turn_key") or "")),
@@ -104,6 +123,9 @@ def project_turn_journal(
         "completed_phases": list(phases) if isinstance(phases, list) else [],
         "validation": _validation_projection(journal),
         "host_kind": str(_deep_get(journal, "kind") or ""),
+        "runtime_kind": str(package.get("worker_kind") or package.get("turn_host") or ""),
+        "model": _model_projection(journal),
+        "route_source": str(package.get("model_source") or "") or None,
         "host_failure_kind": (
             str(host_failure.get("kind")) if isinstance(host_failure, Mapping) else None
         ),

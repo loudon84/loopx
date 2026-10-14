@@ -272,6 +272,18 @@ function requireJournalTransition(
   if (operationId(asObject(existing.plan)) !== operationId(asObject(incoming.plan))) {
     conflict("Turn journal transaction plan is immutable", "journal_plan_conflict");
   }
+  // Execution Package is a nested freeze: once present it may not change for
+  // this Turn. Missing on old journals is allowed (unknown, never forged).
+  if (
+    existing.execution_package !== undefined
+    && operationId(asObject(existing.execution_package))
+      !== operationId(asObject(incoming.execution_package))
+  ) {
+    conflict(
+      "Turn journal execution_package is immutable once written",
+      "journal_execution_package_conflict",
+    );
+  }
   if (terminalStatuses.has(previous.status)) {
     const auditOnly =
       previous.status === next.status &&
