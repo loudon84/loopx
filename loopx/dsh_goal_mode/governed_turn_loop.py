@@ -520,9 +520,18 @@ def run_host_loop(
     descriptor = worker_catalog.resolve_worker(
         endpoint_id,
         authorized_workspaces=[project],
-        require_enabled=False,
+        require_enabled=True,
     )
     if descriptor is None:
+        unavailable = worker_catalog.worker_unavailable_reason(endpoint_id)
+        if unavailable == "feature_flag_disabled":
+            flag = worker_catalog.endpoint_feature_flag(endpoint_id) or (
+                worker_catalog.WORKER_FEATURE_FLAG_ENV
+            )
+            raise LoopError(
+                f"Coding Worker endpoint is disabled on this machine "
+                f"(opt in with {flag}=1): {endpoint_id}"
+            )
         raise LoopError(
             f"Coding Worker endpoint is not registered: {endpoint_id}"
         )
@@ -673,6 +682,11 @@ def run_host_loop(
                 lease_version=lease_version,
                 timeout_seconds=timeout_seconds,
                 registry_path=registry_path,
+                turn_host=descriptor.turn_host,
+                dsh_runner=dsh_runner,
+                dsh_home=dsh_home,
+                codex_bin=codex_bin,
+                cursor_adapter_command=cursor_adapter_command,
             )
             if settled is not None:
                 record = settled
@@ -709,11 +723,17 @@ def _settle_prepared_turn(
     lease_version: int,
     timeout_seconds: float,
     registry_path: Path | None = None,
+    turn_host: str = worker_catalog.TURN_HOST_DSH,
+    dsh_runner: Path | None = None,
+    dsh_home: Path | None = None,
+    codex_bin: str | None = None,
+    cursor_adapter_command: Sequence[str] | None = None,
 ) -> TurnRecord | None:
     """Resolve a prepared effect without re-invoking the host.
 
     Returns ``None`` when settlement could not be reached, so the caller reports
-    the original Turn rather than inventing a success.
+    the original Turn rather than inventing a success. ``turn_host`` must match
+    the journaled plan host (Codex/Cursor resume must not hard-code ``dsh``).
     """
 
     if not validation_argv:
@@ -791,27 +811,44 @@ def _settle_prepared_turn(
     )
     if journal is None:
         return None
+    resume_argv = list(base) + [
+        "turn",
+        "run-once",
+        "--goal-id",
+        goal_id,
+        "--agent-id",
+        agent_id,
+        "--host",
+        turn_host,
+        "--project",
+        str(project),
+        "--resume-turn-key",
+        journal,
+        "--validation-command-json",
+        json.dumps(validation_argv),
+        "--timeout-seconds",
+        str(int(timeout_seconds)),
+        "--execute",
+    ]
+    if turn_host == worker_catalog.TURN_HOST_DSH:
+        if dsh_runner is not None:
+            resume_argv += ["--dsh-runner", str(dsh_runner)]
+        if dsh_home is not None:
+            resume_argv += ["--dsh-home", str(dsh_home)]
+    elif turn_host == worker_catalog.TURN_HOST_CODEX_CLI:
+        if codex_bin:
+            resume_argv += ["--codex-bin", str(codex_bin)]
+    elif turn_host == worker_catalog.TURN_HOST_GENERIC_CLI:
+        adapter = list(cursor_adapter_command or ())
+        if not adapter:
+            adapter = [
+                sys.executable,
+                "-m",
+                "loopx.cursor_worker.turn_host_adapter",
+            ]
+        resume_argv += ["--host-adapter-command-json", json.dumps(adapter)]
     resumed = _run_json(
-        base
-        + [
-            "turn",
-            "run-once",
-            "--goal-id",
-            goal_id,
-            "--agent-id",
-            agent_id,
-            "--host",
-            "dsh",
-            "--project",
-            str(project),
-            "--resume-turn-key",
-            journal,
-            "--validation-command-json",
-            json.dumps(validation_argv),
-            "--timeout-seconds",
-            str(int(timeout_seconds)),
-            "--execute",
-        ],
+        resume_argv,
         cwd=project,
         timeout=timeout_seconds + 300,
     )

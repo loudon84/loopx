@@ -84,7 +84,12 @@ def turn_controller_advisory_primary(
 
 
 def managed_executor_cli_binding(
-    args: argparse.Namespace, *, environ: Mapping[str, str],
+    args: argparse.Namespace,
+    *,
+    environ: Mapping[str, str],
+    model_override: str | None = None,
+    reasoning_effort_override: str | None = None,
+    provider_override: str | None = None,
 ) -> dict[str, Any]:
     """Adapt parsed CLI host options to the existing executor read-model owner.
 
@@ -92,7 +97,27 @@ def managed_executor_cli_binding(
     An explicit runner is a launchability fact owned by this CLI adapter.
     Machine authentication is resolved by the caller independently of any
     Goal runtime override and shared with the eventual host launch.
+
+    ``*_override`` values come from :func:`resolve_worker_model_route` when the
+    CLI did not name an explicit model/effort; CLI flags still win.
     """
+    cli_model = (
+        getattr(args, "dsh_model", None)
+        if args.host == "dsh"
+        else getattr(args, "codex_model", None)
+        if args.host == "codex-cli"
+        else None
+    )
+    cli_effort = (
+        getattr(args, "dsh_reasoning_effort", None)
+        if args.host == "dsh"
+        else getattr(args, "codex_reasoning_effort", None)
+        if args.host == "codex-cli"
+        else None
+    )
+    cli_provider = (
+        getattr(args, "dsh_provider", None) if args.host == "dsh" else None
+    )
     return managed_executor_binding(
         args.host,
         # The credential a managed Turn authenticates with is this
@@ -101,25 +126,9 @@ def managed_executor_cli_binding(
         # have to name the same credential.
         environ=environ,
         dsh_runner_configured=bool(getattr(args, "dsh_runner", None)),
-        provider=(
-            getattr(args, "dsh_provider", None)
-            if args.host == "dsh"
-            else None
-        ),
-        model=(
-            getattr(args, "dsh_model", None)
-            if args.host == "dsh"
-            else getattr(args, "codex_model", None)
-            if args.host == "codex-cli"
-            else None
-        ),
-        reasoning_effort=(
-            getattr(args, "dsh_reasoning_effort", None)
-            if args.host == "dsh"
-            else getattr(args, "codex_reasoning_effort", None)
-            if args.host == "codex-cli"
-            else None
-        ),
+        provider=cli_provider or provider_override,
+        model=cli_model or model_override,
+        reasoning_effort=cli_effort or reasoning_effort_override,
         max_tokens=(
             getattr(args, "dsh_max_tokens", None)
             if args.host == "dsh"

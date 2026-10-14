@@ -1370,6 +1370,20 @@ def run_loopx_turn_once(
         plan.get("transaction") if isinstance(plan.get("transaction"), dict) else {}
     )
     _ensure_turn_settlement_plan(plan, transaction_plan)
+    # Freeze the execution package onto a mutable plan before the host request
+    # is built so generic-cli / Cursor adapters see model_applied (B1).
+    from .execution_package import ensure_plan_execution_package
+
+    plan = plan if isinstance(plan, dict) else dict(plan)
+    ensure_plan_execution_package(
+        plan,
+        turn_host=str(
+            (host_projection or {}).get("kind")
+            if isinstance(host_projection, Mapping)
+            else ""
+        )
+        or None,
+    )
     request = build_loopx_turn_host_request(plan)
     empty_effects = {
         "host_invoked": False,
@@ -1555,26 +1569,18 @@ def run_loopx_turn_once(
             journal["status"] = "in_progress"
             persist_journal(journal)
         if journal is None:
-            from .execution_package import build_execution_package
+            from .execution_package import ensure_plan_execution_package
 
             frozen_plan = dict(plan)
-            if "execution_package" not in frozen_plan:
-                managed = (
-                    frozen_plan.get("managed_executor")
-                    if isinstance(frozen_plan.get("managed_executor"), Mapping)
-                    else None
+            package = ensure_plan_execution_package(
+                frozen_plan,
+                turn_host=str(
+                    (host_projection or {}).get("kind")
+                    if isinstance(host_projection, Mapping)
+                    else ""
                 )
-                frozen_plan["execution_package"] = build_execution_package(
-                    frozen_plan,
-                    turn_host=str(
-                        (host_projection or {}).get("kind")
-                        if isinstance(host_projection, Mapping)
-                        else plan.get("host")
-                        or ""
-                    )
-                    or None,
-                    model_route=managed,
-                )
+                or None,
+            )
             journal = {
                 "schema_version": LOOPX_TURN_JOURNAL_SCHEMA_VERSION,
                 "turn_key": turn_key,
@@ -1583,7 +1589,7 @@ def run_loopx_turn_once(
                 "host": host_projection,
                 "completed_phases": [],
                 "plan": frozen_plan,
-                "execution_package": dict(frozen_plan["execution_package"]),
+                "execution_package": dict(package),
             }
             persist_journal(journal)
         if admission is not None and admission.get("reserved") is True:
@@ -1634,6 +1640,15 @@ def run_loopx_turn_once(
         if terminal is not None:
             return finish_recovery(terminal)
         assert result is not None
+
+        # Settlement evidence: observed model/usage stay unknown when absent.
+        if "execution_observation" not in journal:
+            from .execution_package import observation_from_host_result
+
+            journal["execution_observation"] = observation_from_host_result(
+                result, journal=journal
+            )
+            persist_journal(journal)
 
         completed_phases, terminal = _task_validation_stage(
             plan,

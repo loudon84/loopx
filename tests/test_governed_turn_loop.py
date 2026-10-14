@@ -501,3 +501,20 @@ def test_goal_registry_selects_worker_endpoint(tmp_path: Path) -> None:
         )
         == "cursor-cli-coding-worker-local"
     )
+
+
+def test_run_host_loop_refuses_disabled_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M2: feature flags must be enforced at the loop entry, not only at create."""
+
+    monkeypatch.delenv(worker_catalog.CURSOR_WORKER_FEATURE_FLAG_ENV, raising=False)
+    with pytest.raises(loop.LoopError, match=worker_catalog.CURSOR_WORKER_FEATURE_FLAG_ENV):
+        loop.run_host_loop(
+            goal_id="g1",
+            agent_id="a1",
+            project=tmp_path,
+            worker_endpoint_id="cursor-cli-coding-worker-local",
+            max_turns=1,
+            dry_run=True,
+        )

@@ -52,3 +52,18 @@ def test_goal_default_feeds_managed_profile_without_second_default_system() -> N
     assert resolved["model"] == "goal-flash"
     assert resolved["managed_profile"]["model"] == "goal-flash"
     assert resolved["model_source"] == worker_route.PROFILE_SOURCE_GOAL_DEFAULT
+
+
+def test_attach_worker_route_stamps_plan_for_execution_package() -> None:
+    plan: dict = {"host": "generic-cli"}
+    route = worker_route.attach_worker_route_to_plan(
+        plan,
+        goal={
+            "worker_model_default": "composer-1",
+            "worker_endpoint_id": "cursor-cli-coding-worker-local",
+        },
+        environ={},
+    )
+    assert route["model"] == "composer-1"
+    assert plan["worker_model_route"]["model"] == "composer-1"
+    assert plan["worker_endpoint_id"] == "cursor-cli-coding-worker-local"

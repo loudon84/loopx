@@ -102,3 +102,82 @@ def build_execution_observation(
         "diff_file_count": diff_file_count,
         "diff_summary": _text(diff_summary),
     }
+
+
+def ensure_plan_execution_package(
+    plan: dict[str, Any],
+    *,
+    turn_host: str | None = None,
+    worker_endpoint_id: str | None = None,
+    worker_kind: str | None = None,
+) -> dict[str, Any]:
+    """Ensure ``plan`` carries a frozen execution_package before host request.
+
+    Idempotent: an existing package is returned unchanged so retries reuse the
+    same snapshot. Callers must invoke this before
+    :func:`build_loopx_turn_host_request` so Cursor/generic-cli adapters see the
+    applied model.
+    """
+
+    existing = plan.get("execution_package")
+    if isinstance(existing, Mapping):
+        return dict(existing)
+
+    route = plan.get("worker_model_route")
+    if not isinstance(route, Mapping):
+        managed = plan.get("managed_executor")
+        route = managed if isinstance(managed, Mapping) else None
+    host_value = turn_host
+    if not host_value:
+        planned_host = plan.get("host")
+        if isinstance(planned_host, Mapping):
+            host_value = _text(planned_host.get("kind"))
+        else:
+            host_value = _text(planned_host)
+    package = build_execution_package(
+        plan,
+        worker_endpoint_id=worker_endpoint_id
+        or _text(plan.get("worker_endpoint_id")),
+        worker_kind=worker_kind or _text(plan.get("worker_kind")),
+        turn_host=host_value,
+        model_route=route,
+    )
+    plan["execution_package"] = package
+    return package
+
+
+def observation_from_host_result(
+    result: Mapping[str, Any] | None,
+    *,
+    journal: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project observed model/usage from host output without inventing zeros."""
+
+    payload = result if isinstance(result, Mapping) else {}
+    host_result = (
+        journal.get("host_result")
+        if isinstance(journal, Mapping) and isinstance(journal.get("host_result"), Mapping)
+        else {}
+    )
+    observed = (
+        _text(payload.get("model_observed"))
+        or _text(payload.get("observed_model"))
+        or _text(host_result.get("model_observed"))
+        or _text(host_result.get("observed_model"))
+        or _text(_mapping(payload.get("receipt")).get("model"))
+    )
+    usage = payload.get("usage")
+    if not isinstance(usage, Mapping):
+        usage = host_result.get("usage") if isinstance(host_result.get("usage"), Mapping) else None
+    return build_execution_observation(
+        model_observed=observed,
+        usage=usage if isinstance(usage, Mapping) else None,
+        started_at=_text(payload.get("started_at") or host_result.get("started_at")),
+        ended_at=_text(payload.get("ended_at") or host_result.get("ended_at")),
+        diff_file_count=(
+            payload.get("diff_file_count")
+            if isinstance(payload.get("diff_file_count"), int)
+            else None
+        ),
+        diff_summary=_text(payload.get("diff_summary")),
+    )
