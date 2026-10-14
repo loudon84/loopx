@@ -224,6 +224,9 @@ def build_goal_entry(
     display_name: str | None = None,
     executor_route: str | None = None,
     worker_endpoint_id: str | None = None,
+    worker_route_profile: dict[str, Any] | str | None = None,
+    worker_model_default: str | None = None,
+    worker_reasoning_effort_default: str | None = None,
 ) -> dict[str, Any]:
     authority_sources = []
     if goal_doc:
@@ -247,6 +250,21 @@ def build_goal_entry(
         **(
             {"worker_endpoint_id": worker_endpoint_id}
             if worker_endpoint_id
+            else {}
+        ),
+        **(
+            {"worker_route_profile": worker_route_profile}
+            if worker_route_profile
+            else {}
+        ),
+        **(
+            {"worker_model_default": worker_model_default}
+            if worker_model_default
+            else {}
+        ),
+        **(
+            {"worker_reasoning_effort_default": worker_reasoning_effort_default}
+            if worker_reasoning_effort_default
             else {}
         ),
         "domain": domain,
@@ -341,6 +359,9 @@ def bootstrap_project(
     display_name: str | None = None,
     executor_route: str | None = None,
     worker_endpoint_id: str | None = None,
+    worker_route_profile: dict[str, Any] | str | None = None,
+    worker_model_default: str | None = None,
+    worker_reasoning_effort_default: str | None = None,
     force: bool,
     dry_run: bool,
     sync_global: bool,
@@ -401,6 +422,9 @@ def bootstrap_project(
         display_name=display_name,
         executor_route=executor_route,
         worker_endpoint_id=worker_endpoint_id,
+        worker_route_profile=worker_route_profile,
+        worker_model_default=worker_model_default,
+        worker_reasoning_effort_default=worker_reasoning_effort_default,
     )
     if creation_operation_id is not None:
         goal_entry["creation_operation_id"] = creation_operation_id

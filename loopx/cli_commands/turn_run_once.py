@@ -766,6 +766,30 @@ def execute_turn_run_once(
         host_runner: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None
         session_binding_resolver = None
         if args.host == "codex-cli":
+            from ..control_plane.turn_driver.execution_profile import (
+                managed_execution_profile,
+            )
+            from ..control_plane.turn_driver.worker_route import WorkerRouteError
+
+            codex_profile = managed_execution_profile(
+                operator_environ,
+                model=args.codex_model,
+                reasoning_effort=args.codex_reasoning_effort,
+            )
+            # Explicit CLI flags remain authoritative; when absent, Codex now
+            # consumes the same managed profile as DSH instead of host-default.
+            resolved_codex_model = args.codex_model or str(codex_profile["model"])
+            resolved_codex_effort = args.codex_reasoning_effort or str(
+                codex_profile["reasoning_effort"]
+            )
+            if (
+                args.codex_model
+                and args.codex_model != resolved_codex_model
+            ):
+                raise WorkerRouteError(
+                    "codex model flag conflicts with resolved managed profile",
+                    gate={"kind": "codex_model_conflict"},
+                )
 
             def run_built_in_host(
                 request: Mapping[str, Any],
@@ -775,8 +799,8 @@ def execute_turn_run_once(
                     "project": project,
                     "codex_bin": args.codex_bin,
                     "sandbox": args.codex_sandbox,
-                    "model": args.codex_model,
-                    "reasoning_effort": args.codex_reasoning_effort,
+                    "model": resolved_codex_model,
+                    "reasoning_effort": resolved_codex_effort,
                     "mcp_server": args.codex_mcp_server_json,
                     "timeout_seconds": None if args.timeout_seconds is None else max(1.0, args.timeout_seconds - 5.0),
                 }

@@ -501,6 +501,9 @@ class ChatActionNormalizationMixin:
                     # historical Chat-agent behaviour exactly.
                     "executor_route",
                     "worker_endpoint_id",
+                    "worker_route_profile",
+                    "worker_model_default",
+                    "worker_reasoning_effort_default",
                 },
             )
             from .control_plane.worker_catalog import (
@@ -553,6 +556,27 @@ class ChatActionNormalizationMixin:
             }
             if worker_endpoint_id is not None:
                 result["worker_endpoint_id"] = worker_endpoint_id
+            if values.get("worker_model_default"):
+                result["worker_model_default"] = _opaque(
+                    values.get("worker_model_default"), field="worker_model_default"
+                )
+            if values.get("worker_reasoning_effort_default"):
+                result["worker_reasoning_effort_default"] = _opaque(
+                    values.get("worker_reasoning_effort_default"),
+                    field="worker_reasoning_effort_default",
+                )
+            if values.get("worker_route_profile") is not None:
+                profile = values.get("worker_route_profile")
+                if isinstance(profile, str):
+                    result["worker_route_profile"] = _opaque(
+                        profile, field="worker_route_profile"
+                    )
+                elif isinstance(profile, Mapping):
+                    result["worker_route_profile"] = dict(profile)
+                else:
+                    raise ValueError(
+                        "worker_route_profile must be a profile id or mapping"
+                    )
             if values.get("native_token_budget") is not None:
                 budget = values["native_token_budget"]
                 if type(budget) is not int or not 1 <= budget <= 999_999_999:
