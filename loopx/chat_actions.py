@@ -734,6 +734,14 @@ class ChatActionService(
                     worker_endpoint_id=(
                         str(parameters.get("worker_endpoint_id") or "") or None
                     ),
+                    worker_route_profile=parameters.get("worker_route_profile"),
+                    worker_model_default=(
+                        str(parameters.get("worker_model_default") or "") or None
+                    ),
+                    worker_reasoning_effort_default=(
+                        str(parameters.get("worker_reasoning_effort_default") or "")
+                        or None
+                    ),
                 )
             except GoalCreationConflictError as exc:
                 raise conflict from exc

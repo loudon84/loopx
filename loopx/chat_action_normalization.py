@@ -501,7 +501,14 @@ class ChatActionNormalizationMixin:
                     # historical Chat-agent behaviour exactly.
                     "executor_route",
                     "worker_endpoint_id",
+                    "worker_route_profile",
+                    "worker_model_default",
+                    "worker_reasoning_effort_default",
                 },
+            )
+            from .control_plane.turn_driver.worker_route import (
+                WorkerRouteError,
+                resolve_worker_model_route,
             )
             from .control_plane.worker_catalog import (
                 EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
@@ -513,6 +520,7 @@ class ChatActionNormalizationMixin:
 
             executor_route = normalize_executor_route(values.get("executor_route"))
             worker_endpoint_id = None
+            descriptor = None
             if executor_route == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER:
                 worker_endpoint_id = _opaque(
                     values.get("worker_endpoint_id"), field="worker_endpoint_id"
@@ -553,6 +561,61 @@ class ChatActionNormalizationMixin:
             }
             if worker_endpoint_id is not None:
                 result["worker_endpoint_id"] = worker_endpoint_id
+            if values.get("worker_model_default"):
+                result["worker_model_default"] = _opaque(
+                    values.get("worker_model_default"), field="worker_model_default"
+                )
+            if values.get("worker_reasoning_effort_default"):
+                result["worker_reasoning_effort_default"] = _opaque(
+                    values.get("worker_reasoning_effort_default"),
+                    field="worker_reasoning_effort_default",
+                )
+            if values.get("worker_route_profile") is not None:
+                profile = values.get("worker_route_profile")
+                if isinstance(profile, str):
+                    result["worker_route_profile"] = _opaque(
+                        profile, field="worker_route_profile"
+                    )
+                elif isinstance(profile, Mapping):
+                    result["worker_route_profile"] = dict(profile)
+                else:
+                    raise ValueError(
+                        "worker_route_profile must be a profile id or mapping"
+                    )
+            # Preview-time route check: an explicit model/effort the endpoint
+            # cannot honour must fail here, not after Goal creation.
+            if descriptor is not None and (
+                result.get("worker_model_default")
+                or result.get("worker_reasoning_effort_default")
+                or isinstance(result.get("worker_route_profile"), Mapping)
+            ):
+                caps = dict(descriptor.capabilities or {})
+                efforts = tuple(
+                    str(item)
+                    for item in (caps.get("reasoning_efforts") or ())
+                    if str(item).strip()
+                )
+                route_profile = result.get("worker_route_profile")
+                try:
+                    resolve_worker_model_route(
+                        goal={
+                            "worker_model_default": result.get("worker_model_default"),
+                            "worker_reasoning_effort_default": result.get(
+                                "worker_reasoning_effort_default"
+                            ),
+                        },
+                        route_profile=(
+                            route_profile
+                            if isinstance(route_profile, Mapping)
+                            else None
+                        ),
+                        allowed_efforts=efforts,
+                        model_selection_supported=bool(
+                            caps.get("model_selection", True)
+                        ),
+                    )
+                except WorkerRouteError as exc:
+                    raise ValueError(str(exc)) from exc
             if values.get("native_token_budget") is not None:
                 budget = values["native_token_budget"]
                 if type(budget) is not int or not 1 <= budget <= 999_999_999:

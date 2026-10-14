@@ -211,6 +211,23 @@ export const chatCapabilitiesSchema = z.object({
     version: z.string().nullable(),
     error_code: z.string().nullable(),
   }).optional(),
+  // Coding Worker catalog projection. Optional so older backends remain parseable.
+  governed_turn_workers: z.object({
+    schema_version: z.string(),
+    workers: z.array(z.object({
+      worker_endpoint_id: z.string(),
+      display_name: z.string(),
+      worker_kind: z.string().optional(),
+      turn_host: z.string().optional(),
+      trust_scope: z.string().optional(),
+      tool_calls: z.boolean().optional(),
+      declared_capabilities: z.record(z.string(), z.unknown()).optional(),
+      availability: z.object({
+        ready: z.boolean(),
+        reason: z.string(),
+      }).optional(),
+    })).default([]),
+  }).optional(),
 });
 
 export const todoProposalSchema = z.object({

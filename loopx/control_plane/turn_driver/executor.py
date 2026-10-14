@@ -190,6 +190,10 @@ def build_loopx_turn_host_request(plan: Mapping[str, Any]) -> dict[str, Any]:
             "stdout": "one public-safe JSON object",
         },
     }
+    execution_package = plan.get("execution_package")
+    if isinstance(execution_package, Mapping):
+        # Launcher must use the frozen snapshot, not later global defaults.
+        request["execution_package"] = dict(execution_package)
     goal_ref = plan.get("goal_ref")
     if isinstance(goal_ref, Mapping):
         request["goal_ref"] = dict(goal_ref)
@@ -1551,6 +1555,26 @@ def run_loopx_turn_once(
             journal["status"] = "in_progress"
             persist_journal(journal)
         if journal is None:
+            from .execution_package import build_execution_package
+
+            frozen_plan = dict(plan)
+            if "execution_package" not in frozen_plan:
+                managed = (
+                    frozen_plan.get("managed_executor")
+                    if isinstance(frozen_plan.get("managed_executor"), Mapping)
+                    else None
+                )
+                frozen_plan["execution_package"] = build_execution_package(
+                    frozen_plan,
+                    turn_host=str(
+                        (host_projection or {}).get("kind")
+                        if isinstance(host_projection, Mapping)
+                        else plan.get("host")
+                        or ""
+                    )
+                    or None,
+                    model_route=managed,
+                )
             journal = {
                 "schema_version": LOOPX_TURN_JOURNAL_SCHEMA_VERSION,
                 "turn_key": turn_key,
@@ -1558,7 +1582,8 @@ def run_loopx_turn_once(
                 "status": "in_progress",
                 "host": host_projection,
                 "completed_phases": [],
-                "plan": dict(plan),
+                "plan": frozen_plan,
+                "execution_package": dict(frozen_plan["execution_package"]),
             }
             persist_journal(journal)
         if admission is not None and admission.get("reserved") is True:

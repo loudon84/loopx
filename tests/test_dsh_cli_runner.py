@@ -163,7 +163,8 @@ def test_argv_uses_the_measured_headless_surface_only(
 
     argv = json.loads(result["record"].read_text())["argv"]
 
-    assert argv[:4] == ["--profile", "headless", "--json", "-"]
+    assert argv[:3] == ["--profile", "headless", "--json"]
+    assert argv[-1] == "-"
     # Only the documented 0.2 options may appear; no invented flags.
     allowed_with_value = {"--session-id", "--patch", "--profile"}
     index = 0
@@ -176,18 +177,27 @@ def test_argv_uses_the_measured_headless_surface_only(
         index += 2 if word in allowed_with_value else 1
 
 
-def test_unsupported_argv_controls_are_recorded_not_silently_dropped(
+def test_model_controls_are_applied_through_an_isolated_patch(
     launcher: Path, tmp_path: Path
 ) -> None:
-    """The 0.2 argv cannot express model/provider/effort/max-tokens."""
+    """Model/provider/effort enter argv via per-Turn ``--patch``, not shared profile."""
 
     result = _run(launcher, tmp_path, mode="ok")
-    recorded = result["outcome"]["diagnostics"]["unsupported_argv_controls"]
+    diagnostics = result["outcome"]["diagnostics"]
+    argv = json.loads(result["record"].read_text())["argv"]
 
-    assert recorded["model"] == "deepseek-flash"
-    assert recorded["provider"] == "deepseek"
-    assert recorded["reasoning_effort"] == "high"
-    assert recorded["max_tokens"] == 16384
+    assert "--patch" in argv
+    patch = Path(argv[argv.index("--patch") + 1])
+    assert patch.is_file()
+    patch_text = patch.read_text(encoding="utf-8")
+    assert "model: deepseek-flash" in patch_text
+    assert "provider: deepseek" in patch_text
+    assert "reasoningEffort: high" in patch_text
+    assert diagnostics["applied_model_controls"]["model"] == "deepseek-flash"
+    assert diagnostics["model_patch_applied"] is True
+    # max_tokens remains unsupported on the measured CLI argv surface.
+    assert diagnostics["unsupported_argv_controls"]["max_tokens"] == 16384
+    assert "model" not in diagnostics["unsupported_argv_controls"]
 
 
 def test_fresh_session_mode_does_not_pass_session_id(
