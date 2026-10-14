@@ -1137,6 +1137,18 @@ _TODO_METADATA_FIELD_SCHEMA = (
             "todo_<letters-digits-underscore-hyphen>"
         ),
     ),
+    _TodoMetadataField(
+        "worker_model",
+        _nonempty_metadata_text,
+        invalid_message="worker_model must be a non-empty model id when set",
+    ),
+    _TodoMetadataField(
+        "worker_reasoning_effort",
+        _nonempty_metadata_text,
+        invalid_message=(
+            "worker_reasoning_effort must be a non-empty effort token when set"
+        ),
+    ),
 )
 
 _TODO_METADATA_FIELD_BY_TOKEN = {

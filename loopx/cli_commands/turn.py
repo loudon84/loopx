@@ -195,7 +195,94 @@ def handle_turn_command(
         )
         # Resolve machine authentication once for the readback and host launch.
         operator_environ = operator_provider_environ()
-        payload["managed_executor"] = managed_executor_cli_binding(args, environ=operator_environ)
+        # Task-level model route (Todo > Goal > route_profile > endpoint/env)
+        # must reach the frozen execution package and host launch.
+        from ..control_plane.turn_driver.worker_route import (
+            WorkerRouteError,
+            attach_worker_route_to_plan,
+        )
+        from ..registry import find_registry_goal, load_registry
+
+        worker_route = None
+        try:
+            registry = load_registry(registry_path)
+            goal_entry = find_registry_goal(registry, args.goal_id) or {}
+            envelope = (
+                payload.get("turn_envelope")
+                if isinstance(payload.get("turn_envelope"), Mapping)
+                else {}
+            )
+            action = (
+                envelope.get("action")
+                if isinstance(envelope.get("action"), Mapping)
+                else {}
+            )
+            selected = (
+                action.get("selected_todo")
+                if isinstance(action.get("selected_todo"), Mapping)
+                else {}
+            )
+            cli_model = (
+                getattr(args, "dsh_model", None)
+                if args.host == "dsh"
+                else getattr(args, "codex_model", None)
+                if args.host == "codex-cli"
+                else None
+            )
+            cli_effort = (
+                getattr(args, "dsh_reasoning_effort", None)
+                if args.host == "dsh"
+                else getattr(args, "codex_reasoning_effort", None)
+                if args.host == "codex-cli"
+                else None
+            )
+            worker_route = attach_worker_route_to_plan(
+                payload,
+                goal=goal_entry,
+                todo=selected,
+                explicit_model=cli_model,
+                explicit_reasoning_effort=cli_effort,
+                explicit_provider=(
+                    getattr(args, "dsh_provider", None) if args.host == "dsh" else None
+                ),
+                environ=operator_environ,
+            )
+        except WorkerRouteError:
+            raise
+        except (OSError, TypeError, ValueError, KeyError):
+            # Registry/todo projection gaps must not invent a second default
+            # system; host launch still uses managed_executor_cli_binding.
+            worker_route = None
+        cli_has_model = bool(
+            (args.host == "dsh" and getattr(args, "dsh_model", None))
+            or (args.host == "codex-cli" and getattr(args, "codex_model", None))
+        )
+        cli_has_effort = bool(
+            (args.host == "dsh" and getattr(args, "dsh_reasoning_effort", None))
+            or (
+                args.host == "codex-cli"
+                and getattr(args, "codex_reasoning_effort", None)
+            )
+        )
+        payload["managed_executor"] = managed_executor_cli_binding(
+            args,
+            environ=operator_environ,
+            model_override=(
+                None
+                if cli_has_model
+                else (str(worker_route["model"]) if worker_route else None)
+            ),
+            reasoning_effort_override=(
+                None
+                if cli_has_effort
+                else (
+                    str(worker_route["reasoning_effort"]) if worker_route else None
+                )
+            ),
+            provider_override=(
+                str(worker_route["provider"]) if worker_route else None
+            ),
+        )
         if (
             args.turn_command == "run-once"
             and args.execute

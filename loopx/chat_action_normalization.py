@@ -497,8 +497,63 @@ class ChatActionNormalizationMixin:
                     "stop_condition",
                     "initial_todos",
                     "native_token_budget",
+                    # Additive executor routing. Omitting both preserves the
+                    # historical Chat-agent behaviour exactly.
+                    "executor_route",
+                    "worker_endpoint_id",
+                    "worker_route_profile",
+                    "worker_model_default",
+                    "worker_reasoning_effort_default",
                 },
             )
+            from .control_plane.turn_driver.worker_route import (
+                WorkerRouteError,
+                resolve_worker_model_route,
+            )
+            from .control_plane.worker_catalog import (
+                EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
+                TRUST_SCOPE_WORKSPACE_WRITE,
+                WORKER_FEATURE_FLAG_ENV,
+                endpoint_feature_flag,
+                normalize_executor_route,
+                resolve_worker,
+                worker_unavailable_reason,
+            )
+
+            executor_route = normalize_executor_route(values.get("executor_route"))
+            worker_endpoint_id = None
+            descriptor = None
+            if executor_route == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER:
+                worker_endpoint_id = _opaque(
+                    values.get("worker_endpoint_id"), field="worker_endpoint_id"
+                )
+                descriptor = resolve_worker(worker_endpoint_id)
+                unavailable = worker_unavailable_reason(worker_endpoint_id)
+                # Registration and declaration are checked here so a preview
+                # fails fast and without spawning a host process. The live
+                # availability probe belongs to admission, where the Goal's
+                # workspace is already resolved.
+                if descriptor is None:
+                    if unavailable == "feature_flag_disabled":
+                        flag = (
+                            endpoint_feature_flag(worker_endpoint_id)
+                            or WORKER_FEATURE_FLAG_ENV
+                        )
+                        raise ValueError(
+                            "the Coding Worker capability is disabled on this "
+                            f"machine (opt in with {flag}=1)"
+                        )
+                    raise ValueError(
+                        "selected Coding Worker endpoint is not registered"
+                    )
+                if (
+                    descriptor.trust_scope != TRUST_SCOPE_WORKSPACE_WRITE
+                    or not descriptor.tool_calls
+                ):
+                    raise ValueError(
+                        "selected Coding Worker does not declare a workspace-write "
+                        "tool capability"
+                    )
             goal_id = _opaque(values.get("goal_id"), field="goal_id")
             if any(
                 str(goal.get("id") or "") == goal_id
@@ -508,7 +563,67 @@ class ChatActionNormalizationMixin:
             result: dict[str, Any] = {
                 "goal_id": goal_id,
                 "title": _text(values.get("title"), field="title", limit=200),
+                "executor_route": executor_route,
             }
+            if worker_endpoint_id is not None:
+                result["worker_endpoint_id"] = worker_endpoint_id
+            if values.get("worker_model_default"):
+                result["worker_model_default"] = _opaque(
+                    values.get("worker_model_default"), field="worker_model_default"
+                )
+            if values.get("worker_reasoning_effort_default"):
+                result["worker_reasoning_effort_default"] = _opaque(
+                    values.get("worker_reasoning_effort_default"),
+                    field="worker_reasoning_effort_default",
+                )
+            if values.get("worker_route_profile") is not None:
+                profile = values.get("worker_route_profile")
+                if isinstance(profile, str):
+                    raise ValueError(
+                        "worker_route_profile must be a mapping until profile-id "
+                        "resolution is implemented; pass model_policy fields "
+                        "inline"
+                    )
+                if isinstance(profile, Mapping):
+                    result["worker_route_profile"] = dict(profile)
+                else:
+                    raise ValueError(
+                        "worker_route_profile must be a profile id or mapping"
+                    )
+            # Preview-time route check: an explicit model/effort the endpoint
+            # cannot honour must fail here, not after Goal creation.
+            if descriptor is not None and (
+                result.get("worker_model_default")
+                or result.get("worker_reasoning_effort_default")
+                or isinstance(result.get("worker_route_profile"), Mapping)
+            ):
+                caps = dict(descriptor.capabilities or {})
+                efforts = tuple(
+                    str(item)
+                    for item in (caps.get("reasoning_efforts") or ())
+                    if str(item).strip()
+                )
+                route_profile = result.get("worker_route_profile")
+                try:
+                    resolve_worker_model_route(
+                        goal={
+                            "worker_model_default": result.get("worker_model_default"),
+                            "worker_reasoning_effort_default": result.get(
+                                "worker_reasoning_effort_default"
+                            ),
+                        },
+                        route_profile=(
+                            route_profile
+                            if isinstance(route_profile, Mapping)
+                            else None
+                        ),
+                        allowed_efforts=efforts,
+                        model_selection_supported=bool(
+                            caps.get("model_selection", True)
+                        ),
+                    )
+                except WorkerRouteError as exc:
+                    raise ValueError(str(exc)) from exc
             if values.get("native_token_budget") is not None:
                 budget = values["native_token_budget"]
                 if type(budget) is not int or not 1 <= budget <= 999_999_999:
@@ -529,6 +644,12 @@ class ChatActionNormalizationMixin:
                 if values.get(field):
                     result[field] = _opaque(values[field], field=field)
             if result.get("agent_id"):
+                if executor_route == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER:
+                    # The two routes are mutually exclusive: a Coding Worker
+                    # Goal must not smuggle in a Chat endpoint identity.
+                    raise ValueError(
+                        "a Coding Worker Goal must not also select a Chat agent endpoint"
+                    )
                 self._agent_eligibility(str(result["agent_id"]))
             if values.get("heartbeat") is not None:
                 if not isinstance(values["heartbeat"], Mapping):

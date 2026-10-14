@@ -207,6 +207,11 @@ def build_goal_entry(
     write_scope: list[str],
     execution_profile: dict[str, Any] | None,
     display_name: str | None = None,
+    executor_route: str | None = None,
+    worker_endpoint_id: str | None = None,
+    worker_route_profile: dict[str, Any] | str | None = None,
+    worker_model_default: str | None = None,
+    worker_reasoning_effort_default: str | None = None,
 ) -> dict[str, Any]:
     authority_sources = []
     if goal_doc:
@@ -224,6 +229,29 @@ def build_goal_entry(
     return {
         "id": goal_id,
         **({"display_name": display_name} if display_name else {}),
+        # Additive executor routing. Omitted entirely for Chat-agent Goals, so
+        # every pre-existing Goal keeps its exact historical shape.
+        **({"executor_route": executor_route} if executor_route else {}),
+        **(
+            {"worker_endpoint_id": worker_endpoint_id}
+            if worker_endpoint_id
+            else {}
+        ),
+        **(
+            {"worker_route_profile": worker_route_profile}
+            if worker_route_profile
+            else {}
+        ),
+        **(
+            {"worker_model_default": worker_model_default}
+            if worker_model_default
+            else {}
+        ),
+        **(
+            {"worker_reasoning_effort_default": worker_reasoning_effort_default}
+            if worker_reasoning_effort_default
+            else {}
+        ),
         "domain": domain,
         "status": "active",
         "role": role,
@@ -314,6 +342,11 @@ def bootstrap_project(
     execution_turn_granularity: str | None = None,
     preserve_todos: bool = False,
     display_name: str | None = None,
+    executor_route: str | None = None,
+    worker_endpoint_id: str | None = None,
+    worker_route_profile: dict[str, Any] | str | None = None,
+    worker_model_default: str | None = None,
+    worker_reasoning_effort_default: str | None = None,
     force: bool,
     dry_run: bool,
     sync_global: bool,
@@ -372,6 +405,11 @@ def bootstrap_project(
         write_scope=write_scope or [],
         execution_profile=execution_profile,
         display_name=display_name,
+        executor_route=executor_route,
+        worker_endpoint_id=worker_endpoint_id,
+        worker_route_profile=worker_route_profile,
+        worker_model_default=worker_model_default,
+        worker_reasoning_effort_default=worker_reasoning_effort_default,
     )
     if creation_operation_id is not None:
         goal_entry["creation_operation_id"] = creation_operation_id

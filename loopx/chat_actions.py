@@ -315,11 +315,77 @@ class ChatActionService(
                 raise ValueError("remote Agent endpoint needs a workspace mapping")
         return dict(row)
 
+    def _admit_goal_worker(
+        self,
+        worker_endpoint_id: str,
+        *,
+        project: Path,
+        project_parameters: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Admit one governed-turn Coding Worker for a Goal creation.
+
+        Deliberately distinct from :meth:`_agent_eligibility`. This never
+        consults the Chat endpoint registry and never relaxes the Chat tool
+        check: it answers only whether the *declared* execution worker may run
+        inside this Goal's workspace right now.
+
+        The verdict comes from a live capability probe (binary, version,
+        headless profile, ``DSH_HOME`` writability, credentials, composed
+        tools), not from a declaration. A worker that is merely *configured*
+        is reported unavailable rather than admitted.
+        """
+
+        from .control_plane.worker_catalog import (
+            admit_worker,
+            resolve_worker,
+            worker_unavailable_reason,
+        )
+
+        session_mode = project_parameters.get("session_mode")
+        descriptor = resolve_worker(
+            worker_endpoint_id,
+            authorized_workspaces=[project],
+            session_mode=str(session_mode) if session_mode else None,
+        )
+        if descriptor is None and worker_unavailable_reason(
+            worker_endpoint_id
+        ) == "feature_flag_disabled":
+            from .control_plane.worker_catalog import (
+                WORKER_FEATURE_FLAG_ENV,
+                endpoint_feature_flag,
+            )
+
+            flag = endpoint_feature_flag(worker_endpoint_id) or WORKER_FEATURE_FLAG_ENV
+            raise ValueError(
+                "the Coding Worker capability is disabled on this machine "
+                f"(opt in with {flag}=1)"
+            )
+        probe = admit_worker(
+            descriptor, workspace=project, endpoint_id=worker_endpoint_id
+        )
+        if descriptor is None:  # pragma: no cover - admit_worker already refused
+            raise ValueError("selected Coding Worker endpoint is not registered")
+        capability = dict(probe.get("capability") or {})
+        return {
+            # A Coding Worker has no Chat agent identity: keeping this null is
+            # what makes the Chat session-opening branch skip entirely.
+            "agent_id": None,
+            "worker_endpoint_id": descriptor.worker_endpoint_id,
+            "worker_kind": descriptor.worker_kind,
+            "available": True,
+            "tool_calls": descriptor.tool_calls,
+            "trust_scope": descriptor.trust_scope,
+            "adapter_kind": descriptor.worker_kind,
+            "session_ownership": descriptor.session_ownership,
+            "session_mode": descriptor.session_mode,
+            "execution_program": descriptor.execution_program,
+            "capabilities": dict(capability.get("capabilities") or {}),
+            "source": "governed_turn_worker_catalog",
+        }
+
     @staticmethod
     def _agent_family(value: str) -> str:
         """Classify an id into a host family, bounded at a delimiter.
-
-        A bare prefix match silently swallowed unrelated operator ids:
         ``kiroscope-worker`` and ``codexplorer`` are not the Kiro or Codex
         family, but they matched, and a single false match is enough for
         ``_resolve_goal_agent`` to bind a built-in endpoint to the wrong
@@ -561,6 +627,9 @@ class ChatActionService(
         self, proposal_id: str, proposal: dict[str, Any], parameters: dict[str, Any]
     ) -> dict[str, Any]:
         from .control_plane.effect_runtime import effect_runtime_result
+        from .control_plane.worker_catalog import (
+            EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
+        )
 
         def require_first_turn_readback(turn: dict[str, Any]) -> None:
             plan = effect_runtime_result("presentation.action_review_plan.compile", {
@@ -614,9 +683,19 @@ class ChatActionService(
                 receipt={},
             )
             return {"proposal": stale, "turn": None}
-        self._agent_eligibility(
-            str(parameters.get("agent_id") or "codex"), project=project
-        )
+        if (
+            str(parameters.get("executor_route") or "")
+            == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER
+        ):
+            self._admit_goal_worker(
+                str(parameters.get("worker_endpoint_id") or ""),
+                project=project,
+                project_parameters=parameters,
+            )
+        else:
+            self._agent_eligibility(
+                str(parameters.get("agent_id") or "codex"), project=project
+            )
         self.store.save_checkpoint(
             proposal_id,
             step="workspace_validated",
@@ -666,6 +745,18 @@ class ChatActionService(
                     force=False,
                     dry_run=False,
                     sync_global=False,
+                    executor_route=str(parameters.get("executor_route") or "") or None,
+                    worker_endpoint_id=(
+                        str(parameters.get("worker_endpoint_id") or "") or None
+                    ),
+                    worker_route_profile=parameters.get("worker_route_profile"),
+                    worker_model_default=(
+                        str(parameters.get("worker_model_default") or "") or None
+                    ),
+                    worker_reasoning_effort_default=(
+                        str(parameters.get("worker_reasoning_effort_default") or "")
+                        or None
+                    ),
                 )
             except GoalCreationConflictError as exc:
                 raise conflict from exc
@@ -1155,14 +1246,33 @@ class ChatActionService(
         normalized = self._normalize(action_kind, parameters)
         canonical_update_basis = None
         if action_kind == "goal.create":
+            from .control_plane.worker_catalog import (
+                EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
+            )
+
             project, _source_goal = self._project_for_goal_create(
                 {
                     "normalized_parameters": normalized,
                     "context": dict(context),
                 }
             )
-            agent_id = str(normalized.get("agent_id") or "codex")
-            eligibility = self._agent_eligibility(agent_id, project=project)
+            if (
+                str(normalized.get("executor_route") or "")
+                == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER
+            ):
+                # Execution-capable Coding Worker: admit through the governed-turn
+                # worker catalog. The Chat endpoint tool check is deliberately NOT
+                # consulted here -- a Coding Worker is not a Chat agent, and
+                # relaxing that check for the read-only Steward endpoint would
+                # destroy the guarantee it exists to provide.
+                eligibility = self._admit_goal_worker(
+                    str(normalized.get("worker_endpoint_id") or ""),
+                    project=project,
+                    project_parameters=normalized,
+                )
+            else:
+                agent_id = str(normalized.get("agent_id") or "codex")
+                eligibility = self._agent_eligibility(agent_id, project=project)
         else:
             eligibility = None
         if action_kind == "operation.execute":

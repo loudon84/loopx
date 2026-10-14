@@ -766,6 +766,50 @@ def execute_turn_run_once(
         host_runner: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None
         session_binding_resolver = None
         if args.host == "codex-cli":
+            from ..control_plane.turn_driver.execution_profile import (
+                managed_execution_profile,
+            )
+            from ..control_plane.turn_driver.worker_route import WorkerRouteError
+
+            route = (
+                payload.get("worker_model_route")
+                if isinstance(payload.get("worker_model_route"), dict)
+                else {}
+            )
+            route_model = str(route.get("model") or "").strip() or None
+            route_effort = str(route.get("reasoning_effort") or "").strip() or None
+            route_source = str(route.get("model_source") or "")
+            # Explicit CLI flags remain authoritative; when absent, Codex now
+            # consumes the worker route / managed profile instead of host-default.
+            if (
+                args.codex_model
+                and route_model
+                and args.codex_model != route_model
+                and route_source
+                in {"todo_override", "goal_default", "route_profile"}
+            ):
+                raise WorkerRouteError(
+                    "codex model flag conflicts with resolved worker route",
+                    gate={
+                        "kind": "codex_model_conflict",
+                        "cli_model": args.codex_model,
+                        "route_model": route_model,
+                        "route_source": route_source,
+                    },
+                )
+            codex_profile = managed_execution_profile(
+                operator_environ,
+                model=args.codex_model or route_model,
+                reasoning_effort=args.codex_reasoning_effort or route_effort,
+            )
+            resolved_codex_model = args.codex_model or route_model or str(
+                codex_profile["model"]
+            )
+            resolved_codex_effort = (
+                args.codex_reasoning_effort
+                or route_effort
+                or str(codex_profile["reasoning_effort"])
+            )
 
             def run_built_in_host(
                 request: Mapping[str, Any],
@@ -775,8 +819,8 @@ def execute_turn_run_once(
                     "project": project,
                     "codex_bin": args.codex_bin,
                     "sandbox": args.codex_sandbox,
-                    "model": args.codex_model,
-                    "reasoning_effort": args.codex_reasoning_effort,
+                    "model": resolved_codex_model,
+                    "reasoning_effort": resolved_codex_effort,
                     "mcp_server": args.codex_mcp_server_json,
                     "timeout_seconds": None if args.timeout_seconds is None else max(1.0, args.timeout_seconds - 5.0),
                 }

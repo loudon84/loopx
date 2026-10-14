@@ -36,6 +36,8 @@ const conversationReturns = source("../../data/conversation-returns.ts");
 const tasks = source("./goal-tasks-view.tsx");
 const status = source("../../data/status.ts");
 const chatData = source("../../data/chat.ts");
+const workerRunsData = source("../../data/worker-runs.ts");
+const workerRunsCard = source("./worker-runs-card.tsx");
 const actionReview = source("../../../../../../loopx/control_plane/presentation/action_review_plan.ts");
 
 assert.match(model, /kind: "todo"/, "Todo has its own drawer selection");
@@ -61,6 +63,14 @@ for (const decision of ["approve", "reject", "cancel"]) {
 }
 assert.doesNotMatch(attentionActions, /previewDecision\([^)]*"defer"/, "Deferring records no decision, so the drawer does not offer it as one");
 assert.match(attentionActions, /canDecideAttention\(attention\)/, "Only a typed User gate can be decided from the drawer");
+// LoopX binds a gate's decision to an exact agent and the canonical owner
+// rejects any other actor, so the drawer must read the gate's own binding
+// rather than an unrelated default agent.
+assert.match(
+  attentionActions,
+  /blocksAgent \?\? item\.details\?\.boundAgent/,
+  "A gate carrying only bound_agent still acts as its authoritative actor",
+);
 for (const operation of ["complete", "defer", "cancel"]) {
   assert.match(attentionActions, new RegExp(`previewUserAction\\(item, "${operation}"`), `User action ${operation} uses a typed preview`);
 }
@@ -385,6 +395,50 @@ for (const contextGoalId of [null, "existing-research-goal"]) {
   assert.equal(request.normalizedParameters.goal_id, "goal-new-research");
   assert.notEqual(request.normalizedParameters.goal_id, contextGoalId);
 }
+// An execution-capable Coding Worker is a distinct executor route, never a Chat
+// endpoint the form may select, and the default Chat payload shape is unchanged.
+{
+  const worker = goalCreateRequest({
+    objective: "Add src/hello.py", completion: "hello('LoopX') == 'Hello, LoopX'",
+    boundary: "Isolated testbed only", agentId: "dsh",
+    permission: "workspace_write_on_confirmation", contextGoalId: null,
+    operationId: "worker-goal", executorRoute: "governed_turn_worker",
+  }, (key) => key);
+  assert.equal(worker.normalizedParameters.executor_route, "governed_turn_worker",
+    "The Coding Worker route is emitted explicitly");
+  assert.equal(worker.normalizedParameters.worker_endpoint_id, "dsh-coding-worker-local",
+    "The Coding Worker route names its registered worker endpoint");
+  assert.equal(Object.hasOwn(worker.normalizedParameters, "agent_id"), false,
+    "A Coding Worker Goal must not also carry a Chat agent endpoint id");
+
+  const cursor = goalCreateRequest({
+    objective: "Add src/hello.py", completion: "hello('LoopX') == 'Hello, LoopX'",
+    boundary: "Isolated testbed only", agentId: "dsh",
+    permission: "workspace_write_on_confirmation", contextGoalId: null,
+    operationId: "cursor-goal", executorRoute: "governed_turn_worker",
+    workerEndpointId: "cursor-cli-coding-worker-local",
+    workerModelDefault: "composer-1",
+  }, (key) => key);
+  assert.equal(cursor.normalizedParameters.worker_endpoint_id, "cursor-cli-coding-worker-local");
+  assert.equal(cursor.normalizedParameters.worker_model_default, "composer-1");
+  assert.equal(Object.hasOwn(cursor.normalizedParameters, "worker_reasoning_effort_default"), false,
+    "Optional effort is omitted when the form leaves it blank");
+
+  const chat = goalCreateRequest({
+    objective: "Survey public sources", completion: "A sourced summary",
+    boundary: "Public sources only", agentId: "dsh", permission: "read_only",
+    contextGoalId: null, operationId: "chat-goal",
+  }, (key) => key);
+  assert.equal(Object.hasOwn(chat.normalizedParameters, "executor_route"), false,
+    "The default Chat route keeps its historical payload shape");
+  assert.equal(chat.normalizedParameters.agent_id, "dsh");
+}
+assert.match(actionForm, /CODING_WORKER_ENDPOINT_OPTIONS/, "Create Goal lists registered Coding Worker endpoints");
+assert.match(actionForm, /workerModelDefault/, "Create Goal can carry an optional Goal-default model");
+assert.match(workerRunsCard, /runtime_kind/, "Worker runs card surfaces the runtime kind");
+assert.match(workerRunsCard, /route_source/, "Worker runs card surfaces the model route source");
+assert.match(workerRunsData, /runtime_kind/, "Worker runs schema retains runtime projection fields");
+assert.match(chatData, /governed_turn_workers/, "Capabilities schema retains the Coding Worker catalog");
 assert.match(page, /t\("proposal\.workspace\.current"\)/, "Create Goal localizes its execution workspace explanation");
 assert.match(i18n, /Current local workspace \(no Repository bound\)/, "English workspace copy explains that no repository is bound");
 assert.match(i18n, /当前本地工作区（未绑定 Repository）/, "Chinese workspace copy explains that no repository is bound");

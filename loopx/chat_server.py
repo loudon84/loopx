@@ -125,6 +125,8 @@ CHAT_GOAL_CHANNEL_TARGETS_PATH = "/api/chat/goal-channel/targets"
 CHAT_GOAL_CHANNEL_SETUP_PATH = "/api/chat/goal-channel/setup"
 CHAT_GOAL_CHANNEL_CONFIGURE_PATH = "/api/chat/goal-channel/configure"
 CHAT_GOAL_CONTEXTS_PATH = "/api/chat/goals/contexts"
+# Read-only governed-Turn run history for one Goal (FR-11 / AC-15).
+CHAT_WORKER_RUNS_PATH = "/api/chat/worker-runs"
 CHAT_LARK_APPS_PATH = "/api/chat/lark/apps"
 CHAT_LARK_APP_SETUPS_PATH = "/api/chat/lark/app-setups"
 CHAT_LARK_CHATS_PATH = "/api/chat/lark/chats"
@@ -1383,6 +1385,78 @@ class ChatRequestHandler(
             status=202 if result.get("turn") else 200,
         )
 
+    def _governed_turn_worker_projection(self) -> dict[str, Any]:
+        """Read-only projection of the governed-turn Coding Worker catalog.
+
+        Declaration-only on purpose: this read is on the Web's hot path, so it
+        never launches the host, and it reports ``not_probed`` rather than
+        implying a health verdict it has not measured. The authoritative
+        readiness probe runs at Goal-creation admission. Local absolute paths
+        and credentials are never projected.
+        """
+
+        from .control_plane.worker_catalog import worker_catalog_projection
+
+        try:
+            workspace: Path | None = None
+            selected = str(getattr(self.server, "selected_goal_id", "") or "")
+            registry_path = getattr(self.server, "registry_path", None)
+            if selected and registry_path is not None:
+                payload = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+                for goal in payload.get("goals") or []:
+                    if str(goal.get("id") or "") == selected and goal.get("repo"):
+                        workspace = Path(str(goal["repo"]))
+                        break
+            resolved = (workspace or Path.cwd()).expanduser().resolve()
+            return worker_catalog_projection(
+                workspace=resolved, authorized_workspaces=[resolved]
+            )
+        except Exception:  # noqa: BLE001 - a display read must not break capabilities
+            return {
+                "schema_version": "loopx_governed_turn_worker_catalog_v1",
+                "workers": [],
+            }
+
+    def _worker_runs(self) -> None:
+        """Read-only governed-Turn run history for one Goal (FR-11 / AC-15).
+
+        Purely a projection of the recorded Turn journals: it never re-runs a
+        host, settles anything, writes state or spends quota. Local paths and
+        Session identities are not projected.
+        """
+
+        from .control_plane.worker_run_readback import goal_turn_history
+
+        query = parse_qs(urlparse(self.path).query)
+        goal_id = _compact_text((query.get("goal_id") or [""])[0], limit=160)
+        if not goal_id:
+            self._send_error(
+                "goal_id is required", status=400, error_code="missing_goal_id"
+            )
+            return
+
+        runtime_root = Path.home() / ".loopx"
+        try:
+            payload = json.loads(
+                Path(self.server.registry_path).read_text(encoding="utf-8")
+            )
+            declared = str(payload.get("common_runtime_root") or "").strip()
+            if declared:
+                runtime_root = Path(declared)
+        except Exception:  # noqa: BLE001 - fall back to the default route
+            pass
+
+        raw_limit = (query.get("limit") or [""])[0]
+        limit = int(raw_limit) if raw_limit.isdigit() else 20
+        self._send_json(
+            {
+                "ok": True,
+                **goal_turn_history(
+                    goal_id=goal_id, runtime_root=runtime_root, limit=limit
+                ),
+            }
+        )
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == DEFAULT_EXTENSION_PRESENTATION_SURFACES_PATH:
@@ -1423,6 +1497,7 @@ class ChatRequestHandler(
                 "action_kinds": sorted(ACTION_KINDS),
                 "adapters": self.server.runtime_controller.capabilities(),
                 "lark_cli": self.server.lark_cli_resolution.public_snapshot(),
+                "governed_turn_workers": self._governed_turn_worker_projection(),
             }
             add_goal_subagent_capability(capabilities, server=self.server)
             self._send_json(capabilities)
@@ -1443,6 +1518,7 @@ class ChatRequestHandler(
             CHAT_SESSIONS_PATH: self._list_sessions,
             CHAT_ACTIONS_PATH: self._action_list,
             CHAT_GOAL_CONTEXTS_PATH: self._goal_contexts,
+            CHAT_WORKER_RUNS_PATH: self._worker_runs,
             CHAT_LARK_APPS_PATH: self._lark_apps,
             CHAT_LARK_CHATS_PATH: self._lark_chats,
             CHAT_LARK_CONNECTIONS_PATH: self._lark_connections,
