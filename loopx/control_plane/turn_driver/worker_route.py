@@ -180,3 +180,50 @@ def resolve_worker_model_route(
         "route_profile_version": route_profile.get("profile_version")
         or route_profile.get("version"),
     }
+
+
+def attach_worker_route_to_plan(
+    plan: dict[str, Any],
+    *,
+    goal: Mapping[str, Any] | None,
+    todo: Mapping[str, Any] | None = None,
+    explicit_model: str | None = None,
+    explicit_reasoning_effort: str | None = None,
+    explicit_provider: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    allowed_efforts: tuple[str, ...] | None = None,
+    model_selection_supported: bool = True,
+) -> dict[str, Any]:
+    """Resolve the worker model route and stamp it onto ``plan``.
+
+    The stamped ``worker_model_route`` is what
+    :func:`ensure_plan_execution_package` freezes into the host request.
+    """
+
+    route_profile = None
+    if isinstance(goal, Mapping):
+        profile = goal.get("worker_route_profile")
+        if isinstance(profile, Mapping):
+            route_profile = profile
+        elif profile is not None and not isinstance(profile, str):
+            raise WorkerRouteError(
+                "worker_route_profile must be a mapping when present on the Goal",
+                gate={"kind": "worker_route_profile_invalid"},
+            )
+    route = resolve_worker_model_route(
+        todo=todo,
+        goal=goal,
+        route_profile=route_profile,
+        explicit_model=explicit_model,
+        explicit_reasoning_effort=explicit_reasoning_effort,
+        explicit_provider=explicit_provider,
+        environ=environ,
+        allowed_efforts=allowed_efforts,
+        model_selection_supported=model_selection_supported,
+    )
+    plan["worker_model_route"] = route
+    if goal and goal.get("worker_endpoint_id"):
+        plan["worker_endpoint_id"] = str(goal.get("worker_endpoint_id"))
+    if goal and goal.get("worker_kind"):
+        plan["worker_kind"] = str(goal.get("worker_kind"))
+    return route

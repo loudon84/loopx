@@ -6,6 +6,8 @@ from loopx.control_plane.turn_driver.execution_package import (
     EXECUTION_PACKAGE_SCHEMA_VERSION,
     build_execution_observation,
     build_execution_package,
+    ensure_plan_execution_package,
+    observation_from_host_result,
 )
 from loopx.control_plane.turn_driver.executor import build_loopx_turn_host_request
 from loopx.control_plane.worker_run_readback import project_turn_journal
@@ -63,6 +65,32 @@ def test_host_request_mirrors_frozen_package() -> None:
     request = build_loopx_turn_host_request(plan)
     assert request["execution_package"]["model_applied"] == "deepseek-flash"
     assert request["execution_package"] is not plan["execution_package"]
+
+
+def test_ensure_plan_execution_package_before_host_request() -> None:
+    """B1: package must be on the plan before build_loopx_turn_host_request."""
+
+    plan = _minimal_plan()
+    plan["worker_model_route"] = {
+        "model": "composer-1",
+        "model_source": "goal_default",
+        "provider": "cursor",
+        "reasoning_effort": "medium",
+    }
+    package = ensure_plan_execution_package(plan, turn_host="generic-cli")
+    assert package["model_applied"] == "composer-1"
+    assert plan["execution_package"]["model_applied"] == "composer-1"
+    request = build_loopx_turn_host_request(plan)
+    assert request["execution_package"]["model_applied"] == "composer-1"
+    # Idempotent: second ensure keeps the frozen snapshot.
+    again = ensure_plan_execution_package(plan, turn_host="generic-cli")
+    assert again["model_applied"] == "composer-1"
+
+
+def test_observation_from_host_result_stays_unknown_without_model() -> None:
+    observation = observation_from_host_result({"result_kind": "wait"})
+    assert observation["model_observed"] is None
+    assert observation["model_observed_unknown_reason"] == "not_reported_by_runtime"
 
 
 def test_readback_projects_model_segments_without_session() -> None:

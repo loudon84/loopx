@@ -350,9 +350,15 @@ class ChatActionService(
         if descriptor is None and worker_unavailable_reason(
             worker_endpoint_id
         ) == "feature_flag_disabled":
+            from .control_plane.worker_catalog import (
+                WORKER_FEATURE_FLAG_ENV,
+                endpoint_feature_flag,
+            )
+
+            flag = endpoint_feature_flag(worker_endpoint_id) or WORKER_FEATURE_FLAG_ENV
             raise ValueError(
                 "the Coding Worker capability is disabled on this machine "
-                "(opt in with LOOPX_DSH_CODING_WORKER=1)"
+                f"(opt in with {flag}=1)"
             )
         probe = admit_worker(
             descriptor, workspace=project, endpoint_id=worker_endpoint_id

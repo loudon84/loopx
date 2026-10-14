@@ -787,25 +787,45 @@ def execute_turn_run_once(
             )
             from ..control_plane.turn_driver.worker_route import WorkerRouteError
 
-            codex_profile = managed_execution_profile(
-                operator_environ,
-                model=args.codex_model,
-                reasoning_effort=args.codex_reasoning_effort,
+            route = (
+                payload.get("worker_model_route")
+                if isinstance(payload.get("worker_model_route"), dict)
+                else {}
             )
+            route_model = str(route.get("model") or "").strip() or None
+            route_effort = str(route.get("reasoning_effort") or "").strip() or None
+            route_source = str(route.get("model_source") or "")
             # Explicit CLI flags remain authoritative; when absent, Codex now
-            # consumes the same managed profile as DSH instead of host-default.
-            resolved_codex_model = args.codex_model or str(codex_profile["model"])
-            resolved_codex_effort = args.codex_reasoning_effort or str(
-                codex_profile["reasoning_effort"]
-            )
+            # consumes the worker route / managed profile instead of host-default.
             if (
                 args.codex_model
-                and args.codex_model != resolved_codex_model
+                and route_model
+                and args.codex_model != route_model
+                and route_source
+                in {"todo_override", "goal_default", "route_profile"}
             ):
                 raise WorkerRouteError(
-                    "codex model flag conflicts with resolved managed profile",
-                    gate={"kind": "codex_model_conflict"},
+                    "codex model flag conflicts with resolved worker route",
+                    gate={
+                        "kind": "codex_model_conflict",
+                        "cli_model": args.codex_model,
+                        "route_model": route_model,
+                        "route_source": route_source,
+                    },
                 )
+            codex_profile = managed_execution_profile(
+                operator_environ,
+                model=args.codex_model or route_model,
+                reasoning_effort=args.codex_reasoning_effort or route_effort,
+            )
+            resolved_codex_model = args.codex_model or route_model or str(
+                codex_profile["model"]
+            )
+            resolved_codex_effort = (
+                args.codex_reasoning_effort
+                or route_effort
+                or str(codex_profile["reasoning_effort"])
+            )
 
             def run_built_in_host(
                 request: Mapping[str, Any],

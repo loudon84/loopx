@@ -513,6 +513,8 @@ class ChatActionNormalizationMixin:
             from .control_plane.worker_catalog import (
                 EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
                 TRUST_SCOPE_WORKSPACE_WRITE,
+                WORKER_FEATURE_FLAG_ENV,
+                endpoint_feature_flag,
                 normalize_executor_route,
                 resolve_worker,
                 worker_unavailable_reason,
@@ -533,9 +535,13 @@ class ChatActionNormalizationMixin:
                 # workspace is already resolved.
                 if descriptor is None:
                     if unavailable == "feature_flag_disabled":
+                        flag = (
+                            endpoint_feature_flag(worker_endpoint_id)
+                            or WORKER_FEATURE_FLAG_ENV
+                        )
                         raise ValueError(
                             "the Coding Worker capability is disabled on this "
-                            "machine (opt in with LOOPX_DSH_CODING_WORKER=1)"
+                            f"machine (opt in with {flag}=1)"
                         )
                     raise ValueError(
                         "selected Coding Worker endpoint is not registered"
@@ -573,10 +579,12 @@ class ChatActionNormalizationMixin:
             if values.get("worker_route_profile") is not None:
                 profile = values.get("worker_route_profile")
                 if isinstance(profile, str):
-                    result["worker_route_profile"] = _opaque(
-                        profile, field="worker_route_profile"
+                    raise ValueError(
+                        "worker_route_profile must be a mapping until profile-id "
+                        "resolution is implemented; pass model_policy fields "
+                        "inline"
                     )
-                elif isinstance(profile, Mapping):
+                if isinstance(profile, Mapping):
                     result["worker_route_profile"] = dict(profile)
                 else:
                     raise ValueError(
