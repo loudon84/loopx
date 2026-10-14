@@ -30,6 +30,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -178,10 +179,17 @@ def build_turn_run_once_argv(
     elif descriptor.turn_host == worker_catalog.TURN_HOST_GENERIC_CLI:
         adapter = list(cursor_adapter_command or ())
         if not adapter:
-            raise LoopError(
-                "generic-cli Coding Worker requires an adapter command "
-                "(--cursor-adapter-command-json)"
-            )
+            if descriptor.worker_kind == worker_catalog.WORKER_KIND_CURSOR_CLI_CODING_WORKER:
+                adapter = [
+                    sys.executable,
+                    "-m",
+                    "loopx.cursor_worker.turn_host_adapter",
+                ]
+            else:
+                raise LoopError(
+                    "generic-cli Coding Worker requires an adapter command "
+                    "(--cursor-adapter-command-json)"
+                )
         turn_argv += [
             "--host-adapter-command-json",
             json.dumps(adapter),
