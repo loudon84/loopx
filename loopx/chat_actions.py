@@ -775,6 +775,23 @@ class ChatActionService(
             receipt={"outcome": "goal_bootstrapped", "goal_id": goal_id},
         )
         agent_id = str(parameters.get("agent_id") or "").strip()
+        worker_endpoint_id = str(parameters.get("worker_endpoint_id") or "").strip()
+        is_worker_route = (
+            str(parameters.get("executor_route") or "")
+            == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER
+        )
+        # Coding Worker Goals register a coordination actor derived from the
+        # endpoint. This is not a Chat agent_id: Steward channel binding and
+        # Goal execution stay separate axes.
+        coordination_actor_id = ""
+        if is_worker_route and worker_endpoint_id:
+            from .control_plane.worker_catalog import (
+                coordination_actor_id_for_endpoint,
+            )
+
+            coordination_actor_id = coordination_actor_id_for_endpoint(
+                worker_endpoint_id
+            )
         if agent_id and not progress.get("agentId"):
             configure_goal(
                 registry_path=self.registry_path,
@@ -791,6 +808,26 @@ class ChatActionService(
                     "agent_id": agent_id,
                 },
             )
+        if coordination_actor_id and not progress.get("workerActorId"):
+            configure_goal(
+                registry_path=self.registry_path,
+                goal_id=goal_id,
+                registered_agents=[coordination_actor_id],
+                execute=True,
+            )
+            self.store.save_checkpoint(
+                proposal_id,
+                step="worker_actor_bound",
+                receipt={
+                    "outcome": "worker_actor_bound",
+                    "goal_id": goal_id,
+                    "actor_id": coordination_actor_id,
+                    "worker_endpoint_id": worker_endpoint_id,
+                },
+            )
+        # Initial Todos inherit the Chat agent or the Coding Worker actor so
+        # later Todo updates do not fall through to an unregistered steward id.
+        todo_bind_agent = agent_id or coordination_actor_id or None
         todo_ids: list[str] = list(progress.get("todoIds") or [])
         # Canonical File/SQLite own replay after a committed write loses its
         # response. Historical target-only creation retains its old adapter.
@@ -804,8 +841,8 @@ class ChatActionService(
                 text=str(todo_text),
                 task_class="advancement_task",
                 action_kind="advance",
-                claimed_by=agent_id or None,
-                agent_id=agent_id or None,
+                claimed_by=todo_bind_agent,
+                agent_id=todo_bind_agent,
                 dry_run=False,
                 operation_id=f"goal-create:{proposal_id}:todo:{index}" if authority is not None else None,
             )
@@ -820,6 +857,13 @@ class ChatActionService(
         if agent_id and agent_id not in registered_agent_ids_for_goal(projected):
             raise ValueError(
                 "Goal projection did not retain the selected Agent binding"
+            )
+        if (
+            coordination_actor_id
+            and coordination_actor_id not in registered_agent_ids_for_goal(projected)
+        ):
+            raise ValueError(
+                "Goal projection did not retain the Coding Worker actor binding"
             )
         turn_result: dict[str, Any] | None = None
         session_id = ""

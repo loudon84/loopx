@@ -14,6 +14,7 @@ No CLI, model or network is involved here.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -501,6 +502,60 @@ def test_goal_registry_selects_worker_endpoint(tmp_path: Path) -> None:
         )
         == "cursor-cli-coding-worker-local"
     )
+
+
+def test_host_loop_actor_prefers_goal_worker_roster(tmp_path: Path) -> None:
+    """Steward Chat ids must not silently drive a Coding Worker Goal."""
+
+    endpoint = "cursor-cli-coding-worker-local"
+    expected = worker_catalog.coordination_actor_id_for_endpoint(endpoint)
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "goals": [
+                    {
+                        "id": "g1",
+                        "worker_endpoint_id": endpoint,
+                        "coordination": {"registered_agents": [expected]},
+                    }
+                ]
+            }
+        )
+    )
+    assert (
+        loop._resolve_host_loop_actor_id(
+            goal_id="g1",
+            registry_path=registry,
+            explicit_agent_id="dsh",
+            endpoint_id=endpoint,
+        )
+        == expected
+    )
+    # A second registered peer that is not the Worker actor is refused so a
+    # steward Chat id cannot silently drive Todo updates on this Goal.
+    registry.write_text(
+        json.dumps(
+            {
+                "goals": [
+                    {
+                        "id": "g1",
+                        "worker_endpoint_id": endpoint,
+                        "coordination": {
+                            "registered_agents": [expected, "codex"]
+                        },
+                    }
+                ]
+            }
+        )
+    )
+    with pytest.raises(loop.LoopError, match="refusing mismatched"):
+        loop._resolve_host_loop_actor_id(
+            goal_id="g1",
+            registry_path=registry,
+            explicit_agent_id="codex",
+            endpoint_id=endpoint,
+        )
 
 
 def test_run_host_loop_refuses_disabled_endpoint(

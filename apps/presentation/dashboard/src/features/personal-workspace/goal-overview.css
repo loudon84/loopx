@@ -13,6 +13,9 @@
 .goal-overview-summary.has-attention { grid-template-columns: 1fr 1fr; }
 .goal-overview-summary > section { display: grid; align-content: start; gap: 16px; padding: 20px; border: 1px solid var(--pw-line); border-radius: 12px; background: var(--pw-card); min-width: 0; }
 .goal-overview-summary p, .goal-overview-source-note { color: var(--pw-muted); font-size: var(--text-body); line-height: var(--leading-body); }
+.goal-overview-worker { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.goal-overview-worker small { color: var(--pw-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.goal-overview-worker strong { font-size: var(--text-body); line-height: var(--leading-body); font-weight: 600; color: var(--pw-text); }
 .goal-overview-summary strong, .goal-overview-summary p, .goal-overview-summary button span { overflow-wrap: anywhere; }
 .goal-overview-summary ul { list-style: none; margin: 0; padding: 0; }
 .goal-overview-summary li + li { margin-top: 8px; }

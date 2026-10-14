@@ -84,6 +84,28 @@ def _loopx_bin() -> str:
     return shutil.which("loopx") or "loopx"
 
 
+def _goal_from_registry(
+    *,
+    goal_id: str,
+    registry_path: Path | None,
+) -> dict[str, Any] | None:
+    """Load one Goal row from the registry without inventing defaults."""
+
+    if registry_path is None or not registry_path.is_file():
+        return None
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    for goal in payload.get("goals") or []:
+        if not isinstance(goal, Mapping):
+            continue
+        if str(goal.get("id") or "") != goal_id:
+            continue
+        return dict(goal)
+    return None
+
+
 def _goal_worker_endpoint_id(
     *,
     goal_id: str,
@@ -99,20 +121,50 @@ def _goal_worker_endpoint_id(
 
     if explicit and str(explicit).strip():
         return str(explicit).strip()
-    if registry_path is None or not registry_path.is_file():
-        return DEFAULT_WORKER_ENDPOINT_ID
-    try:
-        payload = json.loads(registry_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return DEFAULT_WORKER_ENDPOINT_ID
-    for goal in payload.get("goals") or []:
-        if not isinstance(goal, Mapping):
-            continue
-        if str(goal.get("id") or "") != goal_id:
-            continue
+    goal = _goal_from_registry(goal_id=goal_id, registry_path=registry_path)
+    if goal is not None:
         endpoint = str(goal.get("worker_endpoint_id") or "").strip()
         return endpoint or DEFAULT_WORKER_ENDPOINT_ID
     return DEFAULT_WORKER_ENDPOINT_ID
+
+
+def _resolve_host_loop_actor_id(
+    *,
+    goal_id: str,
+    registry_path: Path | None,
+    explicit_agent_id: str,
+    endpoint_id: str,
+) -> str:
+    """Resolve the Todo/Turn actor for one Coding Worker host loop.
+
+    Steward Chat ids (``dsh`` / ``codex``) must not silently drive a Worker
+    Goal. When the Goal roster already carries the endpoint's coordination
+    actor, that actor wins over a mismatched CLI ``--agent-id``.
+    """
+
+    from loopx.agent_registry import registered_agent_ids_for_goal
+
+    expected = worker_catalog.coordination_actor_id_for_endpoint(endpoint_id)
+    explicit = str(explicit_agent_id or "").strip()
+    goal = _goal_from_registry(goal_id=goal_id, registry_path=registry_path)
+    registered = registered_agent_ids_for_goal(goal)
+    if expected in registered:
+        if explicit and explicit != expected and explicit in registered:
+            raise LoopError(
+                f"Coding Worker Goal {goal_id!r} is bound to actor {expected!r}; "
+                f"refusing mismatched agent_id {explicit!r}"
+            )
+        return expected
+    if registered:
+        if explicit in registered:
+            return explicit
+        raise LoopError(
+            f"agent_id {explicit!r} is not registered on Goal {goal_id!r}; "
+            f"registered actors: {', '.join(registered)}"
+        )
+    # Pre-binding Goals (or callers that only supply --agent-id): prefer the
+    # endpoint's stable actor so Todo updates do not fall through to a steward.
+    return expected if not explicit else explicit
 
 
 def build_turn_run_once_argv(
@@ -535,6 +587,12 @@ def run_host_loop(
         raise LoopError(
             f"Coding Worker endpoint is not registered: {endpoint_id}"
         )
+    agent_id = _resolve_host_loop_actor_id(
+        goal_id=goal_id,
+        registry_path=registry_path,
+        explicit_agent_id=agent_id,
+        endpoint_id=endpoint_id,
+    )
 
     turns: list[TurnRecord] = []
     host_invocations = 0

@@ -175,6 +175,24 @@ def endpoint_feature_flag(endpoint_id: str) -> str | None:
     return str(template.get("feature_flag") or WORKER_FEATURE_FLAG_ENV)
 
 
+def coordination_actor_id_for_endpoint(endpoint_id: str) -> str:
+    """Return the stable coordination actor id for one Coding Worker endpoint.
+
+    Coding Worker Goals must not use a Chat steward id (``dsh`` / ``codex``) as
+    their Todo/Turn actor: Steward display and Goal execution are separate
+    axes. The actor id is derived from the endpoint so Todo updates and
+    ``quota should-run`` can register against a closed roster without opening a
+    Chat session.
+    """
+
+    endpoint = str(endpoint_id or "").strip()
+    if endpoint not in BUILTIN_WORKER_ENDPOINTS:
+        raise ValueError(f"unknown Coding Worker endpoint: {endpoint!r}")
+    # Public-safe token: lowercase letters, digits, hyphen. Distinct from Chat
+    # endpoint ids so a Worker Goal never collides with steward channel binding.
+    return f"coding-worker:{endpoint}"
+
+
 def endpoint_worker_enabled(
     endpoint_id: str, *, environment: Mapping[str, str] | None = None
 ) -> bool:

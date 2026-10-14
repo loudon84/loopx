@@ -365,6 +365,24 @@ def test_worker_route_creates_the_goal_without_the_chat_tool_error(
     # No Chat agent identity was bound, which is what keeps the Chat session
     # opening branch out of the Coding Worker path entirely.
     assert not goal.get("agent_id") or goal.get("agent_id") != "codex"
+    # Coding Worker Goals register a coordination actor derived from the
+    # endpoint so Todo updates do not fall through to an unregistered steward.
+    expected_actor = worker_catalog.coordination_actor_id_for_endpoint(
+        WORKER_ENDPOINT_ID
+    )
+    registered = (goal.get("coordination") or {}).get("registered_agents") or []
+    assert expected_actor in registered
+    assert "dsh" not in registered
+    assert "codex" not in registered
+
+
+def test_coordination_actor_id_is_stable_and_public_safe() -> None:
+    actor = worker_catalog.coordination_actor_id_for_endpoint(
+        "cursor-cli-coding-worker-local"
+    )
+    assert actor == "coding-worker:cursor-cli-coding-worker-local"
+    with pytest.raises(ValueError, match="unknown"):
+        worker_catalog.coordination_actor_id_for_endpoint("not-a-worker")
 
 
 def test_unknown_worker_endpoint_is_rejected_at_preview(

@@ -103,6 +103,10 @@ def build_run_history(
                 "legacy_runtime_goal": goal.get("legacy_runtime_goal"),
                 "adapter_kind": goal.get("adapter_kind"),
                 "adapter_status": goal.get("adapter_status"),
+                # Executor route and Coding Worker endpoint are Goal execution
+                # identity, distinct from the steward Chat chip.
+                "executor_route": goal.get("executor_route"),
+                "worker_endpoint_id": goal.get("worker_endpoint_id"),
                 "coordination": compact_goal_coordination(goal.get("coordination")),
                 "explore_graph": goal.get("explore_graph")
                 if isinstance(goal.get("explore_graph"), dict)

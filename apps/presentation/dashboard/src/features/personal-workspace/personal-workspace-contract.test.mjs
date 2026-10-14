@@ -439,6 +439,16 @@ assert.match(workerRunsCard, /runtime_kind/, "Worker runs card surfaces the runt
 assert.match(workerRunsCard, /route_source/, "Worker runs card surfaces the model route source");
 assert.match(workerRunsData, /runtime_kind/, "Worker runs schema retains runtime projection fields");
 assert.match(chatData, /governed_turn_workers/, "Capabilities schema retains the Coding Worker catalog");
+assert.match(
+  source("./goal-overview.tsx"),
+  /workerEndpointLabel|Worker endpoint|Worker 端点/,
+  "Goal overview projects the Coding Worker endpoint distinctly from the steward chip",
+);
+assert.match(
+  dashboard,
+  /executor_route === "governed_turn_worker"/,
+  "Personal Goal projection does not fall back to the steward Chat id for Worker Goals",
+);
 assert.match(page, /t\("proposal\.workspace\.current"\)/, "Create Goal localizes its execution workspace explanation");
 assert.match(i18n, /Current local workspace \(no Repository bound\)/, "English workspace copy explains that no repository is bound");
 assert.match(i18n, /当前本地工作区（未绑定 Repository）/, "Chinese workspace copy explains that no repository is bound");

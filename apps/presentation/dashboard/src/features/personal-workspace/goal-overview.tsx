@@ -14,18 +14,24 @@ export function GoalOverview({ active, goal, items, userTodos, readOnly, onOpenD
   const copy = locale === "zh-CN" ? {
     progress: "当前进展", attention: "需要你", none: "当前没有已加载的待处理决定。", details: "Goal 信息",
     tasks: "查看任务", usage: "最近 24 小时", execution: "执行记录",
+    worker: "Worker 端点",
     remote: "此来源仅提供同步的状态与验收观察，交付链需要实时本机来源。",
   } : {
     progress: "Current progress", attention: "Needs you", none: "No pending decisions are loaded.", details: "Goal information",
     tasks: "View tasks", usage: "Last 24 hours", execution: "Execution",
+    worker: "Worker endpoint",
     remote: "This source provides synchronized status and acceptance observations. The delivery chain requires the live local source.",
   };
   const attention = userTodos.filter(item => item.goalId === goal.goalId);
   const run = items.find((item): item is Extract<WorkspaceTimelineItem, { kind: "run" }> => item.kind === "run" && item.run.goalId === goal.goalId);
+  const workerLabel = goal.executorRoute === "governed_turn_worker"
+    ? (goal.workerEndpointLabel || goal.workerEndpointId)
+    : null;
   return <section className="goal-overview" aria-label={t("header.overview")}>
     <header className="goal-overview-heading"><h2>{t("header.overview")}</h2><button onClick={onOpenDetails} type="button"><Info size={15} />{copy.details}</button></header>
     <div className={`goal-overview-summary${attention.length ? " has-attention" : ""}`}>
       <section><header><h3>{copy.progress}</h3><span>{localizedGoalState(goal.state, locale)}</span></header>
+        {workerLabel ? <p className="goal-overview-worker"><small>{copy.worker}</small> <strong>{workerLabel}</strong></p> : null}
         <strong>{goal.nextSentence}</strong>
         {goal.agentSentence && goal.agentSentence !== goal.nextSentence ? <p>{goal.agentSentence}</p> : null}
         {!attention.length ? <p className="goal-overview-quiet">{copy.none}</p> : null}
