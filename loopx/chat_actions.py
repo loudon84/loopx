@@ -919,6 +919,7 @@ class ChatActionService(
                 )[:600],
                 "quota_state": str(guard.get("state") or "waiting"),
             }
+        worker_host_loop: dict[str, Any] | None = None
         if agent_id and self.runtime_controller is not None and first_turn_gate is None and turn_result is None:
             if progress.get("sessionId"):
                 session = self.runtime_controller.store.load_session(progress["sessionId"])
@@ -969,6 +970,36 @@ class ChatActionService(
                     "turn_id": turn_result["turn_id"],
                 },
             )
+        elif (
+            is_worker_route
+            and coordination_actor_id
+            and worker_endpoint_id
+            and not progress.get("workerHostLoop")
+        ):
+            # Coding Worker Goals have no Chat first Turn. Start the governed
+            # host loop so open Todos are asked through quota should-run and
+            # driven by turn run-once — otherwise the board stays 未分配 forever.
+            from .dsh_goal_mode.host_loop_launch import launch_coding_worker_host_loop
+
+            handle = launch_coding_worker_host_loop(
+                goal_id=goal_id,
+                actor_id=coordination_actor_id,
+                project=project,
+                worker_endpoint_id=worker_endpoint_id,
+                registry_path=self.registry_path,
+            )
+            worker_host_loop = handle.as_dict()
+            self.store.save_checkpoint(
+                proposal_id,
+                step="worker_host_loop_started",
+                receipt={
+                    "outcome": "worker_host_loop_started",
+                    "goal_id": goal_id,
+                    "actor_id": coordination_actor_id,
+                    "worker_endpoint_id": worker_endpoint_id,
+                    "alive": worker_host_loop.get("alive"),
+                },
+            )
         elif first_turn_gate is not None:
             self.store.save_checkpoint(
                 proposal_id,
@@ -979,7 +1010,7 @@ class ChatActionService(
         if heartbeat.get("enabled") is True:
             heartbeat_parameters = {
                 "goal_id": goal_id,
-                "agent_id": agent_id or "codex",
+                "agent_id": agent_id or coordination_actor_id or "codex",
                 "operation": "bind",
                 "cadence": str(heartbeat.get("cadence") or "1d"),
                 "timezone": str(heartbeat.get("timezone") or "UTC"),
@@ -1016,11 +1047,24 @@ class ChatActionService(
                     else {}
                 ),
                 **({"agent_id": agent_id} if agent_id else {}),
+                **(
+                    {"actor_id": coordination_actor_id}
+                    if coordination_actor_id
+                    else {}
+                ),
+                **(
+                    {"worker_endpoint_id": worker_endpoint_id}
+                    if worker_endpoint_id
+                    else {}
+                ),
                 **({"todo_ids": todo_ids} if todo_ids else {}),
                 **({"session_id": session_id} if session_id else {}),
                 **({"turn_id": turn_result["turn_id"]} if turn_result else {}),
             },
             **({"child_gate": child_gate} if child_gate else {}),
+            **(
+                {"worker_host_loop": worker_host_loop} if worker_host_loop else {}
+            ),
             "step_receipts": (
                 (self.store.load(proposal_id) or {}).get("checkpoint") or {}
             ).get("steps", {}),
