@@ -9,6 +9,25 @@ export type GoalExecutorRoute = "chat_agent" | "governed_turn_worker";
 /** Worker endpoint id the backend Governed Turn Worker Catalog registers. */
 export const DEFAULT_CODING_WORKER_ENDPOINT_ID = "dsh-coding-worker-local";
 
+/** Builtin Coding Worker endpoints the create form may offer. */
+export const CODING_WORKER_ENDPOINT_OPTIONS = [
+  {
+    id: "dsh-coding-worker-local",
+    labelEn: "DSH Coding Worker",
+    labelZh: "DSH Coding Worker",
+  },
+  {
+    id: "codex-cli-coding-worker-local",
+    labelEn: "Codex CLI Coding Worker",
+    labelZh: "Codex CLI Coding Worker",
+  },
+  {
+    id: "cursor-cli-coding-worker-local",
+    labelEn: "Cursor CLI Coding Worker",
+    labelZh: "Cursor CLI Coding Worker",
+  },
+] as const;
+
 export function goalCreateContent(input: GoalContent, t: WorkspaceTranslate) {
   const objective = input.objective.trim();
   const completion = input.completion.trim();
@@ -26,6 +45,7 @@ export function goalCreateContent(input: GoalContent, t: WorkspaceTranslate) {
 export function goalCreateRequest(input: GoalContent & {
   agentId: string; permission: string; contextGoalId: string | null; operationId?: string;
   executorRoute?: GoalExecutorRoute; workerEndpointId?: string;
+  workerModelDefault?: string; workerReasoningEffortDefault?: string;
 }, t: WorkspaceTranslate): WorkspaceActionPreviewRequest {
   const content = goalCreateContent(input, t);
   // The backend routes are mutually exclusive: a Coding Worker Goal must not
@@ -35,6 +55,12 @@ export function goalCreateRequest(input: GoalContent & {
     ? {
         executor_route: "governed_turn_worker" as const,
         worker_endpoint_id: input.workerEndpointId ?? DEFAULT_CODING_WORKER_ENDPOINT_ID,
+        ...(input.workerModelDefault
+          ? { worker_model_default: input.workerModelDefault }
+          : {}),
+        ...(input.workerReasoningEffortDefault
+          ? { worker_reasoning_effort_default: input.workerReasoningEffortDefault }
+          : {}),
       }
     : { agent_id: input.agentId };
   return {

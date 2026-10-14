@@ -19,7 +19,8 @@ type WorkerRunsCopy = {
   title: string; readOnly: string; loading: string; error: string; empty: string;
   recorded: string; journalTime: string; validation: string; passed: string;
   failed: string; notRun: string; unknown: string; phases: string; failure: string;
-  attempts: string; turn: string; truncated: string;
+  attempts: string; turn: string; truncated: string; runtime: string; model: string;
+  routeSource: string;
 };
 
 const copy: Record<"en" | "zh", WorkerRunsCopy> = {
@@ -41,6 +42,9 @@ const copy: Record<"en" | "zh", WorkerRunsCopy> = {
     attempts: "attempts",
     turn: "Turn",
     truncated: "Showing the most recent runs only.",
+    runtime: "Runtime",
+    model: "Model",
+    routeSource: "Route source",
   },
   zh: {
     title: "受控 Turn 运行记录",
@@ -60,6 +64,9 @@ const copy: Record<"en" | "zh", WorkerRunsCopy> = {
     attempts: "次尝试",
     turn: "Turn",
     truncated: "仅显示最近的运行记录。",
+    runtime: "运行时",
+    model: "模型",
+    routeSource: "路由来源",
   },
 } as const;
 
@@ -120,6 +127,31 @@ export function WorkerRunsCard({ goalId }: { goalId: string }) {
               <dt>{labels.phases}</dt>
               <dd>{run.completed_phases.length}</dd>
             </div>
+            {run.runtime_kind ? (
+              <div>
+                <dt>{labels.runtime}</dt>
+                <dd>{run.runtime_kind}</dd>
+              </div>
+            ) : null}
+            {run.model?.applied || run.model?.resolved || run.model?.requested ? (
+              <div>
+                <dt>{labels.model}</dt>
+                <dd>
+                  {[
+                    run.model.requested ? `req=${run.model.requested}` : null,
+                    run.model.resolved ? `res=${run.model.resolved}` : null,
+                    run.model.applied ? `app=${run.model.applied}` : null,
+                    run.model.observed ? `obs=${run.model.observed}` : (run.model.observed_unknown_reason ? `obs=unknown(${run.model.observed_unknown_reason})` : null),
+                  ].filter(Boolean).join(" · ")}
+                </dd>
+              </div>
+            ) : null}
+            {run.route_source ? (
+              <div>
+                <dt>{labels.routeSource}</dt>
+                <dd>{run.route_source}</dd>
+              </div>
+            ) : null}
             {run.todo_id ? (
               <div>
                 <dt>Todo</dt>

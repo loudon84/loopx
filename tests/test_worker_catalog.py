@@ -560,3 +560,37 @@ def test_cursor_missing_binary_is_refused_before_launch(
         )
     assert excinfo.value.gate["kind"] == "worker_not_ready"
     assert "binary_not_installed" in str(excinfo.value.gate["reason"])
+
+
+def test_invalid_worker_reasoning_effort_is_rejected_at_preview(
+    tmp_path: Path, worker_env: Path
+) -> None:
+    """An explicit effort the endpoint cannot honour fails before Goal create.
+
+    Uses a hand-written empty registry so preview normalization can be checked
+    without Goal storage bootstrap (EffectRuntime) on constrained hosts.
+    """
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"schema_version": "loopx_registry_v0", "goals": []}))
+    service = ChatActionService(
+        store=ChatActionStore(tmp_path / "actions"), registry_path=registry
+    )
+
+    with pytest.raises(ValueError, match="not supported by this worker endpoint"):
+        service.preview(
+            {
+                "action_kind": "goal.create",
+                "summary": "Create",
+                "context": {},
+                "normalized_parameters": {
+                    "goal_id": "p5-bad-effort",
+                    "title": "Bad effort",
+                    "executor_route": worker_catalog.EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
+                    "worker_endpoint_id": WORKER_ENDPOINT_ID,
+                    "worker_model_default": "deepseek-v4",
+                    "worker_reasoning_effort_default": "not-a-real-effort",
+                },
+                "idempotency_key": "p5-bad-effort",
+            }
+        )
