@@ -14,8 +14,11 @@ No CLI, model or network is involved here.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from loopx.control_plane import worker_catalog
 from loopx.dsh_goal_mode import governed_turn_loop as loop
 
 
@@ -96,10 +99,15 @@ def test_runtime_root_falls_back_when_the_registry_is_unreadable(tmp_path) -> No
 
 
 def test_runtime_root_prefers_the_declared_common_root(tmp_path) -> None:
-    registry = tmp_path / "registry.json"
-    registry.write_text('{"common_runtime_root": "%s"}' % (tmp_path / "runtime"))
+    import json
 
-    assert loop._runtime_root_for(registry, tmp_path) == tmp_path / "runtime"
+    registry = tmp_path / "registry.json"
+    runtime = tmp_path / "runtime"
+    registry.write_text(
+        json.dumps({"common_runtime_root": str(runtime)}), encoding="utf-8"
+    )
+
+    assert loop._runtime_root_for(registry, tmp_path) == runtime
 
 
 def test_in_progress_key_is_none_without_a_turns_directory(tmp_path) -> None:
@@ -402,3 +410,94 @@ def test_settlement_fence_recognises_more_than_one_report_shape() -> None:
     )
     assert not loop._is_settlement_fence(committed, {"recovery_from": "durable_writeback"})
     assert not loop._is_settlement_fence(record, {"error": "host could not start"})
+
+
+def test_dsh_turn_argv_keeps_historical_shape(tmp_path: Path) -> None:
+    descriptor = worker_catalog.resolve_worker(
+        "dsh-coding-worker-local",
+        environment={worker_catalog.WORKER_FEATURE_FLAG_ENV: "1"},
+        require_enabled=False,
+    )
+    assert descriptor is not None
+    argv = loop.build_turn_run_once_argv(
+        base=["loopx", "--format", "json"],
+        goal_id="g1",
+        agent_id="a1",
+        project=tmp_path,
+        todo_id="todo_a",
+        turn_instance_id="turn-1",
+        timeout_seconds=1800,
+        descriptor=descriptor,
+        dsh_runner=tmp_path / "runner.py",
+        dsh_home=tmp_path / "dsh-home",
+    )
+    assert argv[argv.index("--host") + 1] == "dsh"
+    assert argv[argv.index("--dsh-runner") + 1] == str(tmp_path / "runner.py")
+    assert argv[argv.index("--dsh-home") + 1] == str(tmp_path / "dsh-home")
+    assert argv[-1] == "--execute"
+
+
+def test_codex_and_cursor_turn_argv_dispatch(tmp_path: Path) -> None:
+    codex = worker_catalog.resolve_worker(
+        "codex-cli-coding-worker-local",
+        environment={worker_catalog.CODEX_WORKER_FEATURE_FLAG_ENV: "1"},
+        require_enabled=False,
+    )
+    cursor = worker_catalog.resolve_worker(
+        "cursor-cli-coding-worker-local",
+        environment={worker_catalog.CURSOR_WORKER_FEATURE_FLAG_ENV: "1"},
+        require_enabled=False,
+    )
+    assert codex is not None and cursor is not None
+
+    codex_argv = loop.build_turn_run_once_argv(
+        base=["loopx"],
+        goal_id="g1",
+        agent_id="a1",
+        project=tmp_path,
+        todo_id="todo_a",
+        turn_instance_id="turn-1",
+        timeout_seconds=60,
+        descriptor=codex,
+        dsh_runner=None,
+        codex_bin="/opt/codex",
+    )
+    assert codex_argv[codex_argv.index("--host") + 1] == "codex-cli"
+    assert "--dsh-runner" not in codex_argv
+    assert codex_argv[codex_argv.index("--codex-bin") + 1] == "/opt/codex"
+
+    cursor_argv = loop.build_turn_run_once_argv(
+        base=["loopx"],
+        goal_id="g1",
+        agent_id="a1",
+        project=tmp_path,
+        todo_id="todo_a",
+        turn_instance_id="turn-1",
+        timeout_seconds=60,
+        descriptor=cursor,
+        dsh_runner=None,
+        cursor_adapter_command=["python", "-m", "loopx.cursor_worker.turn_host_adapter"],
+    )
+    assert cursor_argv[cursor_argv.index("--host") + 1] == "generic-cli"
+    assert "--host-adapter-command-json" in cursor_argv
+
+
+def test_goal_registry_selects_worker_endpoint(tmp_path: Path) -> None:
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        '{"goals":[{"id":"g1","worker_endpoint_id":"codex-cli-coding-worker-local"}]}'
+    )
+    assert (
+        loop._goal_worker_endpoint_id(
+            goal_id="g1", registry_path=registry, explicit=None
+        )
+        == "codex-cli-coding-worker-local"
+    )
+    assert (
+        loop._goal_worker_endpoint_id(
+            goal_id="g1",
+            registry_path=registry,
+            explicit="cursor-cli-coding-worker-local",
+        )
+        == "cursor-cli-coding-worker-local"
+    )

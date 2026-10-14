@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 FAKE_LAUNCHER_SOURCE = '''#!/usr/bin/env python3
@@ -104,9 +105,31 @@ raise SystemExit(0)
 
 
 def write_fake_launcher(directory: Path, *, name: str = "fake-dsh") -> Path:
-    """Write the executable fake launcher into ``directory`` and return its path."""
+    """Write the executable fake launcher into ``directory`` and return its path.
 
-    target = directory / name
-    target.write_text(FAKE_LAUNCHER_SOURCE, encoding="utf-8")
-    target.chmod(0o755)
-    return target
+    On Windows the shebang script is not a valid Win32 image, so the helper also
+    writes a ``.cmd`` wrapper that invokes the same source via the current
+    Python and returns that wrapper path for ``LOOPX_DSH_CODING_WORKER_BIN``.
+    """
+
+    script = directory / f"{name}.py"
+    script.write_text(FAKE_LAUNCHER_SOURCE, encoding="utf-8")
+    script.chmod(0o755)
+    if os.name != "nt":
+        # POSIX keeps the historical extension-less name as a symlink/copy.
+        target = directory / name
+        if target.exists() or target.is_symlink():
+            target.unlink()
+        try:
+            target.hardlink_to(script)
+        except OSError:
+            target.write_text(FAKE_LAUNCHER_SOURCE, encoding="utf-8")
+            target.chmod(0o755)
+        return target
+    wrapper = directory / f"{name}.cmd"
+    wrapper.write_text(
+        "@echo off\r\n"
+        f'"{sys.executable}" "%~dp0{name}.py" %*\r\n',
+        encoding="utf-8",
+    )
+    return wrapper
