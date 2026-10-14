@@ -143,22 +143,25 @@ CLI_OUTPUT_BUDGET_SPECS: tuple[CliOutputBudgetSpec, ...] = (
             # Fixed-path base/head emit 21,871 JSON / 8,690 Markdown chars.
             # Keep the selected-Todo source, freshness, ordering and stop rules.
             "small": {"json": 22_000, "markdown": 9_000},
-            # 36 Todos / 12 runs emit 35,710 chars; 36,000 leaves 290.
-            # Per-Todo growth and fixed semantic growth remain independent.
-            "crowded": {"json": 36_000, "markdown": 7_800},
+            # Same 36-Todo / 12-run source: 38,432 -> 39,101 chars with
+            # objective/evidence guidance; small and multi-agent paths unchanged.
+            # Per-Todo and fixed semantic growth are accounted for separately.
+            "crowded": {"json": 40_000, "markdown": 7_800},
             "multi_agent": {"json": 23_000, "markdown": 7_000},
         },
         max_lines={
             "small": {"json": 600, "markdown": 140},
-            "crowded": {"json": 850, "markdown": 90},
+            "crowded": {"json": 950, "markdown": 90},
             "multi_agent": {"json": 650, "markdown": 80},
         },
         scale_axis="todo_count",
         max_json_growth_chars_per_unit=300,
         # Required replan carries dense decision evidence from the full index.
-        # The unchanged fixture grows 21,871 -> 35,710 chars / 579 -> 836 lines.
+        # Required authoring and objective/evidence advice are fixed packets.
+        # Paired crowded-minus-small growth: 19,236 -> 19,905 chars; the
+        # new advice adds 669. Small and multi-agent paths stay identical.
         # This fixed decision packet must not relax per-Todo growth or other routes.
-        max_json_fixed_semantic_growth_chars=6_000,
+        max_json_fixed_semantic_growth_chars=9_700,
     ),
     CliOutputBudgetSpec(
         surface_id="loopx_turn_plan",
@@ -176,11 +179,11 @@ CLI_OUTPUT_BUDGET_SPECS: tuple[CliOutputBudgetSpec, ...] = (
             "small": {"json": 12_500, "markdown": 300},
             # Required vision carries the validator's complete authoring schema,
             # executable registry-bound commands and the overflow diagnostic.
-            # The same fixed-path base/head fixture emits 16,250 chars,
-            # or 16,679 with Agent vision. 17,000 leaves at least 321 while retaining
-            # the temporal, evidence and reasonable-next-step obligations.
+            # Paired fixed-path output with Agent vision: 16,735 -> 17,408;
+            # added objective/evidence advice preserves all prior obligations.
+            # 18,000 leaves bounded headroom; ordinary paths remain unchanged.
             # Keep the line, per-Todo and fixed semantic-growth guards below.
-            "crowded": {"json": 17_000, "markdown": 600},
+            "crowded": {"json": 18_000, "markdown": 600},
             "multi_agent": {"json": 14_500, "markdown": 600},
         },
         max_lines={
@@ -195,12 +198,11 @@ CLI_OUTPUT_BUDGET_SPECS: tuple[CliOutputBudgetSpec, ...] = (
         # The complete validator-owned vision-authoring schema appears only on
         # the required-vision route. Account for that fixed semantic packet
         # separately so it does not relax the per-Todo growth budget. The
-        # complete schema and guidance produce crowded-minus-small = 6,544
-        # chars on both current main and the restored head. Keep 35*60 = 2,100
-        # as the per-Todo allowance; 4,700 leaves 256 fixed chars of headroom.
-        # The historical 4,200 + 2,100 ceiling was 244 short without any
-        # candidate output growth. This is a regression budget, not authority.
-        max_json_fixed_semantic_growth_chars=4_700,
+        # paired crowded-minus-small growth is 6,673 -> 7,346 chars. Keep
+        # 35*60 = 2,100 as the per-Todo allowance; the advice adds 673 fixed
+        # chars, so 5,400 leaves 154 of headroom without widening per-Todo growth.
+        # This is a regression budget, not authority.
+        max_json_fixed_semantic_growth_chars=5_400,
     ),
     CliOutputBudgetSpec(
         surface_id="status",
@@ -381,7 +383,10 @@ CLI_OUTPUT_MODE_VARIANT_SPECS: tuple[CliOutputModeVariantSpec, ...] = (
             "packet_summary",
         ),
         markdown_anchor="# Guided Start Goal",
-        max_chars={"json": 64_000, "markdown": 3_200},
+        # The real differential fixture grows from 2,781 to 3,217 Markdown
+        # characters with the complete Todo readback step and command. Keep
+        # that decision guidance; only the explicit detail-mode ceiling grows.
+        max_chars={"json": 64_000, "markdown": 3_600},
         max_lines={"json": 650, "markdown": 55},
     ),
     CliOutputModeVariantSpec(

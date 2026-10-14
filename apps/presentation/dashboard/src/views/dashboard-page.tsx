@@ -4,6 +4,7 @@ import { conversationReturnSessions, conversationPendingReturnSessions, reconcil
 import { readConversationReturns } from "../data/conversation-return-observation";
 import { currentChannelSession, useConversationHistory } from "../data/use-conversation-history";
 import { useChatProjects } from "../data/use-chat-projects";
+import { CODING_WORKER_ENDPOINT_OPTIONS } from "../features/personal-workspace/goal-create-request";
 import {compactWorkspaceText as compactShareText, workspaceAgentTodoFromItem} from "../features/personal-workspace/personal-workspace-model";
 import type { GoalAcceptanceObservation } from "../data/goal-acceptance-observation";
 import { attentionDetails, attentionDetailsFromSnapshot, sourceAttention } from "../features/personal-workspace/attention-details";
@@ -1079,12 +1080,26 @@ function buildPersonalHomeModel(
       personalAgentSentence(payload, row, state, t),
     ].map((value) => projectionSentence(value, t))
       .find((value) => value !== "" && value !== "暂无") ?? t("projection.nextUpdatePending");
+    const workerEndpointId = goal.worker_endpoint_id ?? null;
+    const workerEndpointOption = workerEndpointId
+      ? CODING_WORKER_ENDPOINT_OPTIONS.find((option) => option.id === workerEndpointId)
+      : undefined;
+    // Coding Worker Goals own a coordination actor on the roster. Never fall
+    // back to the steward Chat id ``codex`` when the Goal selected a Worker.
+    const fallbackAgentId = goal.executor_route === "governed_turn_worker"
+      ? (registeredAgentIds[0] ?? workerEndpointId ?? "coding-worker")
+      : (registeredAgentIds[0] ?? "codex");
     return [{
       activationState: goal.activation_state,
-      agentId: agentRow?.agentId ?? registeredAgentIds[0] ?? "codex",
+      agentId: agentRow?.agentId ?? fallbackAgentId,
       agentLaneCount: goalAgentLanes.length,
       agentLanes: goalAgentLanes,
-      agentLabel: agentRow?.agentId,
+      agentLabel: workerEndpointOption
+        ? workerEndpointOption.labelZh
+        : agentRow?.agentId,
+      executorRoute: goal.executor_route ?? null,
+      workerEndpointId,
+      workerEndpointLabel: workerEndpointOption?.labelZh ?? workerEndpointId,
       agentSentence: personalAgentSentence(payload, row, state, t),
       agentTodos: [...goalAgentTodos, ...agentTodoFacts.recentCompleted],
       boundHostSurfaces: Array.from(new Set((goal.coordination?.thread_agent_bindings ?? [])

@@ -549,6 +549,10 @@ export const runGoalSchema = z.object({
   legacy_runtime_goal: z.boolean().optional().default(false),
   adapter_kind: z.string().optional().nullable(),
   adapter_status: z.string().optional().nullable(),
+  /** Goal execution route; distinct from the steward Chat chip. */
+  executor_route: z.enum(["chat_agent", "governed_turn_worker"]).optional().nullable(),
+  /** Coding Worker endpoint id when executor_route is governed_turn_worker. */
+  worker_endpoint_id: z.string().optional().nullable(),
   authority_registry: authorityRegistrySchema.optional().nullable(),
   quota: quotaSchema.optional().nullable(),
   control_plane: controlPlaneSchema.optional().nullable(),

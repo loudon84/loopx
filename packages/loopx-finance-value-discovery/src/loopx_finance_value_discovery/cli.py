@@ -51,6 +51,11 @@ from .period_semantics import (
 )
 
 
+from .cumulative_flow import (
+    FINANCE_FLOW_DIFFERENCE_INPUT_SCHEMA_VERSION,
+    assess_flow_difference,
+)
+
 FINANCE_RESEARCH_DASHBOARD_INPUT_SCHEMA_VERSION = "finance_research_dashboard_input_v0"
 
 
@@ -96,6 +101,11 @@ def _direct_parser() -> argparse.ArgumentParser:
         help="Assess frozen source encodings and parent-declared economic periods.",
     )
     period_parser.add_argument("--input-json", required=True)
+    flow_parser = sub.add_parser(
+        "assess-period-difference",
+        help="Derive a tail flow from compatible cumulative/prefix declarations.",
+    )
+    flow_parser.add_argument("--input-json", required=True)
     cash_parser = sub.add_parser(
         "assess-cash",
         help="Reconcile six source-column signed cash amounts and retain unknowns.",
@@ -174,13 +184,21 @@ def _direct_parser() -> argparse.ArgumentParser:
     sub.add_parser("list-packs", help="List bundled industry metric packs.")
     lark_parser = sub.add_parser(
         "render-lark-card",
-        help="Render research conclusions and evidence from the canonical dashboard view; no send.",
+        help="Render a research input or exact published review reference; no send.",
     )
-    lark_parser.add_argument(
+    lark_source = lark_parser.add_mutually_exclusive_group(required=True)
+    lark_source.add_argument(
         "--input-json",
-        required=True,
         help=f"Path to a {FINANCE_RESEARCH_DASHBOARD_INPUT_SCHEMA_VERSION} object.",
     )
+    lark_source.add_argument(
+        "--published-state-file",
+        help="Extension state file owning the published research; reads only.",
+    )
+    lark_parser.add_argument("--goal-id")
+    lark_parser.add_argument("--extension-revision")
+    lark_parser.add_argument("--payload-sha256")
+    lark_parser.add_argument("--surface-id")
     guard_parser = sub.add_parser(
         "evaluate-position", help="Assess private position protection and exit readback; no writes.",
     )
@@ -198,6 +216,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             schema_version = payload.get("schema_version")
             if schema_version == FINANCE_CASH_RECONCILIATION_INPUT_SCHEMA_VERSION:
                 packet = assess_cash_reconciliation(payload)
+            elif schema_version == FINANCE_FLOW_DIFFERENCE_INPUT_SCHEMA_VERSION:
+                packet = assess_flow_difference(payload)
             elif schema_version in {
                 FINANCE_PERIOD_COMPARISON_INPUT_SCHEMA_VERSION,
                 FINANCE_PERIOD_COMPARISON_INPUT_V2_SCHEMA_VERSION,
@@ -236,6 +256,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "assess-period":
             packet = assess_period_comparison(_load_json(args.input_json))
+        elif args.command == "assess-period-difference":
+            packet = assess_flow_difference(_load_json(args.input_json))
         elif args.command == "assess-cash":
             packet = assess_cash_reconciliation(_load_json(args.input_json))
         elif args.command == "evaluate-position":
@@ -274,21 +296,37 @@ def run(argv: Sequence[str] | None = None) -> int:
         elif args.command == "list-packs":
             packet = list_finance_metric_packs()
         elif args.command == "render-lark-card":
-            from .dashboard import build_finance_research_dashboard_packet
-            from .lark_projection import build_decision_research_lark_card
+            if args.published_state_file:
+                from .lark_projection import build_published_decision_research_lark_card
 
-            dashboard = build_finance_research_dashboard_packet(
-                _load_json(args.input_json)
-            )
-            packet = build_decision_research_lark_card(
-                dashboard["presentation_projection"]["view"]
-            )
+                if not all((args.goal_id, args.extension_revision, args.payload_sha256)):
+                    raise ValueError("published card requires --goal-id, --extension-revision and --payload-sha256 from the exact publication")
+                packet = build_published_decision_research_lark_card(
+                    state_file=args.published_state_file,
+                    goal_id=args.goal_id,
+                    extension_revision=args.extension_revision,
+                    payload_sha256=args.payload_sha256,
+                    surface_id=args.surface_id or "investment-research",
+                )
+            else:
+                from .dashboard import build_finance_research_dashboard_packet
+                from .lark_projection import build_decision_research_lark_card
+
+                if any((args.goal_id, args.extension_revision, args.payload_sha256, args.surface_id)):
+                    raise ValueError("publication reference flags require --published-state-file")
+                dashboard = build_finance_research_dashboard_packet(
+                    _load_json(args.input_json)
+                )
+                packet = build_decision_research_lark_card(
+                    dashboard["presentation_projection"]["view"]
+                )
         else:
             raise ValueError(
                 "use --doctor, reduce, evaluate, replay, attribute-beta, "
                 "replay-beta, evaluate-pack, replay-pack, list-packs, "
                 "render-lark-card, build-operation-request, or "
-                "evaluate-contract-liquidity, evaluate-position, assess-period, or assess-cash"
+                "evaluate-contract-liquidity, evaluate-position, assess-period, "
+                "assess-period-difference, or assess-cash"
             )
     except Exception as exc:
         # Position inputs are private; malformed values never enter diagnostics.

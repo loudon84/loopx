@@ -126,6 +126,10 @@ def test_best_only_install_requires_ordinary_worker_hook_readback(tmp_path, monk
     monkeypatch.setattr(CodexOffline, "install", installed)
     monkeypatch.setattr(BenchmarkCodex, "install", installed)
     monkeypatch.setattr(CodexAgent, "install_stop_hook", lambda *args: None)
+    staged = []
+    async def stage_python(environment, destination):
+        staged.append(destination)
+    monkeypatch.setattr("benchmark.runtime.sforge.stage_portable_python", stage_python)
     ordinary_reads = []
     def command(handle, cmd, **kwargs):
         if kwargs.get("user") == "agent" and isinstance(cmd, list) and "read_bytes" in cmd[-1]:
@@ -145,6 +149,8 @@ def test_best_only_install_requires_ordinary_worker_hook_readback(tmp_path, monk
         assert json.loads((tmp_path / "worker-profile.json").read_text())["feedback_payload"] == "official-result"
         assert json.loads((tmp_path / "worker-profile.json").read_text())["loopx_usage_ping_enabled"] is False
     assert len(ordinary_reads) == 1
+    assert ordinary_reads[0][0] == "/opt/loopx-benchmark/python/bin/python3"
+    assert len(staged) == int(profile in {"official", "single"})
 
 
 @pytest.mark.parametrize("profile,total,expected", [
@@ -469,9 +475,9 @@ def test_edgebench_rejects_invalid_profile_settings_before_creating_trial(tmp_pa
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("entry", [None, "seeded-todo"])
 @pytest.mark.parametrize("task,timeout_args,expected,interval", [
-    ("fixture", [], 64800, 300),
-    ("portfolio_risk_calibration", [], 43200, 300),
-    ("lean_analysis_proofs", [], 43200, 300),
+    ("fixture", [], 64800, 0),
+    ("portfolio_risk_calibration", [], 43200, 0),
+    ("lean_analysis_proofs", [], 43200, 0),
     ("portfolio_risk_calibration", ["--timeout", "1800", "--eval-interval", "60"], 1800, 60),
     ("lean_analysis_proofs", ["--eval-interval", "0"], 43200, 0)])
 def test_edgebench_receipt_records_resolved_entry_and_enabled_treatment(tmp_path, monkeypatch, enabled, task, timeout_args, expected, interval, entry, cadence_args, field, count):
@@ -486,7 +492,10 @@ def test_edgebench_receipt_records_resolved_entry_and_enabled_treatment(tmp_path
     monkeypatch.setattr(run, "source_pins", lambda *a: ("fixture", "fixture"))
     monkeypatch.setattr(run, "load_benchmark", lambda *a: None)
     monkeypatch.setattr(run, "make_task_spec", lambda *a: SimpleNamespace(
-        cwd="/task", work_image_key="work", judge_image_key="judge", internet=False))
+        cwd="/task", work_image_key="work", judge_image_key="judge", internet=False,
+        game_mode=False, submit_paths=["solver.py"],
+        work=SimpleNamespace(agent_query="fixture task"),
+        judge=SimpleNamespace(selection="score_first", score_direction="maximize")))
     monkeypatch.setenv("CODEX_AUTH_JSON_PATH", "/synthetic-credential")
     monkeypatch.setattr(run, "RecordingDockerBackend", lambda **k: SimpleNamespace(image_exists=lambda image: True))
     def stop_before_solver(**kwargs):
@@ -646,3 +655,42 @@ def test_recorded_solver_exit_does_not_take_status_from_output(tmp_path, monkeyp
     assert backend.execution_receipt == {"exit_code": 1, "execution_started": True,
                                          "timed_out": False, "elapsed_seconds": 310}
     assert json.loads((tmp_path / "execution-receipt.json").read_text()) == backend.execution_receipt
+
+
+@pytest.mark.parametrize("profile", [
+    "official", "single", "native-goal", "heartbeat-resume", "heartbeat-explore",
+])
+@pytest.mark.parametrize("feedback,prompt", [
+    ("native", None), ("native", "Synthetic native wrapper"), ("blind", "Synthetic local task"),
+])
+def test_install_preserves_mode_owned_submission_access(tmp_path, monkeypatch, profile, feedback, prompt):
+    pytest.importorskip("sforge")
+    pytest.importorskip("harbor")
+    from types import SimpleNamespace
+    from sforge.harness.agent.codex import CodexAgent
+    from sforge.harness.config import SForgeConfig
+    from benchmark.runtime.sforge import SForgeWorker, CodexOffline, BenchmarkCodex
+    credential = tmp_path / "synthetic-auth.json"
+    credential.write_text("{}")
+    monkeypatch.setenv("CODEX_AUTH_JSON_PATH", str(credential))
+    monkeypatch.delenv("LOOPX_PORTABLE_PYTHON", raising=False)
+    async def installed(self, environment):
+        pass
+    async def forbidden(*args):
+        raise AssertionError("Plain native/blind worker staged extra runtime")
+    monkeypatch.setattr(CodexOffline, "install", installed)
+    monkeypatch.setattr(BenchmarkCodex, "install", installed)
+    monkeypatch.setattr("benchmark.runtime.sforge.stage_portable_python", forbidden)
+    monkeypatch.setattr(CodexAgent, "install_stop_hook", lambda *args: None)
+    commands = []
+    def exec_run(handle, command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(exit_code=0)
+    backend = SimpleNamespace(exec_run=exec_run,
+                              copy_to_container=lambda *args: None)
+    worker = SForgeWorker(SForgeConfig(agent_model="fixture", agent_effort="xhigh"),
+        profile=profile, cwd="/task", feedback=feedback,
+        feedback_prompt=prompt)
+    worker.install_stop_hook(backend, None, tmp_path, None)
+    assert (["rm", "-f", "/usr/local/bin/sforge-submit"] in commands) is (feedback != "native")
+    assert json.loads((tmp_path / "worker-profile.json").read_text())["feedback"] == feedback

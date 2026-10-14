@@ -162,6 +162,12 @@ export type WorkspaceGoal = {
   }>;
   agentLaneCount?: number;
   agentLabel?: string;
+  /** Chat steward vs Coding Worker Goal execution; distinct from steward chip. */
+  executorRoute?: "chat_agent" | "governed_turn_worker" | null;
+  /** Builtin Coding Worker endpoint id when this Goal uses governed_turn_worker. */
+  workerEndpointId?: string | null;
+  /** Human label for the Coding Worker endpoint, when projected. */
+  workerEndpointLabel?: string | null;
   agentSentence: string;
   agentTodos: WorkspaceAgentTodo[];
   /** Host surfaces of threads bound to this Goal; binding proves ownership, never execution. */

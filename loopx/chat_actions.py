@@ -9,7 +9,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 from .agent_registry import agent_profile_for_goal, registered_agent_ids_for_goal
-from .bootstrap import GoalCreationConflictError, bootstrap_project
+from .control_plane.projects.identity import GoalCreationConflictError
 from .capabilities.machine_configuration.goal_storage import initialize_goal_storage_target
 from .chat import apply_todo_review_preview, build_todo_review_preview
 from .chat_action_normalization import ChatActionNormalizationMixin
@@ -34,7 +34,7 @@ from .paths import resolve_runtime_root
 from .public_safe_text import OPAQUE_ID_PATTERN as _OPAQUE_ID
 from .quota import build_quota_should_run
 from .registry import registry_goals
-from .todos import add_goal_todo, update_goal_todo
+from .control_plane.todos.mutation_api import add_goal_todo, update_goal_todo
 
 
 CHAT_ACTION_RESPONSE_SCHEMA_VERSION = "loopx_chat_action_response_v1"
@@ -631,6 +631,13 @@ class ChatActionService(
             EXECUTOR_ROUTE_GOVERNED_TURN_WORKER,
         )
 
+        def require_first_turn_readback(turn: dict[str, Any]) -> None:
+            plan = effect_runtime_result("presentation.action_review_plan.compile", {
+                "proposal": {**proposal, "first_turn_readback": turn},
+            })
+            if plan.get("reason") == "readback_unverified":
+                raise ValueError("The original first Turn ended before Host dispatch; inspect its original Session instead of starting another")
+
         current_fingerprint = self._registry_fingerprint()
         heartbeat = (
             parameters.get("heartbeat")
@@ -709,6 +716,8 @@ class ChatActionService(
             result = {"ok": True}
         else:
             try:
+                from .bootstrap import bootstrap_project
+
                 result = bootstrap_project(
                     project=project,
                     creation_operation_id=proposal_id,
@@ -766,6 +775,23 @@ class ChatActionService(
             receipt={"outcome": "goal_bootstrapped", "goal_id": goal_id},
         )
         agent_id = str(parameters.get("agent_id") or "").strip()
+        worker_endpoint_id = str(parameters.get("worker_endpoint_id") or "").strip()
+        is_worker_route = (
+            str(parameters.get("executor_route") or "")
+            == EXECUTOR_ROUTE_GOVERNED_TURN_WORKER
+        )
+        # Coding Worker Goals register a coordination actor derived from the
+        # endpoint. This is not a Chat agent_id: Steward channel binding and
+        # Goal execution stay separate axes.
+        coordination_actor_id = ""
+        if is_worker_route and worker_endpoint_id:
+            from .control_plane.worker_catalog import (
+                coordination_actor_id_for_endpoint,
+            )
+
+            coordination_actor_id = coordination_actor_id_for_endpoint(
+                worker_endpoint_id
+            )
         if agent_id and not progress.get("agentId"):
             configure_goal(
                 registry_path=self.registry_path,
@@ -782,6 +808,26 @@ class ChatActionService(
                     "agent_id": agent_id,
                 },
             )
+        if coordination_actor_id and not progress.get("workerActorId"):
+            configure_goal(
+                registry_path=self.registry_path,
+                goal_id=goal_id,
+                registered_agents=[coordination_actor_id],
+                execute=True,
+            )
+            self.store.save_checkpoint(
+                proposal_id,
+                step="worker_actor_bound",
+                receipt={
+                    "outcome": "worker_actor_bound",
+                    "goal_id": goal_id,
+                    "actor_id": coordination_actor_id,
+                    "worker_endpoint_id": worker_endpoint_id,
+                },
+            )
+        # Initial Todos inherit the Chat agent or the Coding Worker actor so
+        # later Todo updates do not fall through to an unregistered steward id.
+        todo_bind_agent = agent_id or coordination_actor_id or None
         todo_ids: list[str] = list(progress.get("todoIds") or [])
         # Canonical File/SQLite own replay after a committed write loses its
         # response. Historical target-only creation retains its old adapter.
@@ -795,8 +841,8 @@ class ChatActionService(
                 text=str(todo_text),
                 task_class="advancement_task",
                 action_kind="advance",
-                claimed_by=agent_id or None,
-                agent_id=agent_id or None,
+                claimed_by=todo_bind_agent,
+                agent_id=todo_bind_agent,
                 dry_run=False,
                 operation_id=f"goal-create:{proposal_id}:todo:{index}" if authority is not None else None,
             )
@@ -812,6 +858,13 @@ class ChatActionService(
             raise ValueError(
                 "Goal projection did not retain the selected Agent binding"
             )
+        if (
+            coordination_actor_id
+            and coordination_actor_id not in registered_agent_ids_for_goal(projected)
+        ):
+            raise ValueError(
+                "Goal projection did not retain the Coding Worker actor binding"
+            )
         turn_result: dict[str, Any] | None = None
         session_id = ""
         if progress.get("firstTurn"):
@@ -822,6 +875,7 @@ class ChatActionService(
             turn = turn_store.load_turn(session_id, turn_id) if session is not None else None
             if session is None or session.get("goal_id") != goal_id or session.get("agent_id") != agent_id or turn is None:
                 raise ValueError("The recorded first Turn is unavailable; restore its original Session instead of starting another")
+            require_first_turn_readback(turn)
             turn_result = {"turn_id": turn_id, "status": str(turn["status"]), "created": False}
         first_turn_gate: dict[str, Any] | None = None
         try:
@@ -865,6 +919,7 @@ class ChatActionService(
                 )[:600],
                 "quota_state": str(guard.get("state") or "waiting"),
             }
+        worker_host_loop: dict[str, Any] | None = None
         if agent_id and self.runtime_controller is not None and first_turn_gate is None and turn_result is None:
             if progress.get("sessionId"):
                 session = self.runtime_controller.store.load_session(progress["sessionId"])
@@ -900,6 +955,7 @@ class ChatActionService(
                 work_dir=project,
                 objective=objective,
             )
+            require_first_turn_readback(first_turn)
             turn_result = {
                 "turn_id": _opaque(first_turn.get("turn_id"), field="turn_id"),
                 "status": str(first_turn.get("status") or "queued"),
@@ -914,6 +970,36 @@ class ChatActionService(
                     "turn_id": turn_result["turn_id"],
                 },
             )
+        elif (
+            is_worker_route
+            and coordination_actor_id
+            and worker_endpoint_id
+            and not progress.get("workerHostLoop")
+        ):
+            # Coding Worker Goals have no Chat first Turn. Start the governed
+            # host loop so open Todos are asked through quota should-run and
+            # driven by turn run-once — otherwise the board stays 未分配 forever.
+            from .dsh_goal_mode.host_loop_launch import launch_coding_worker_host_loop
+
+            handle = launch_coding_worker_host_loop(
+                goal_id=goal_id,
+                actor_id=coordination_actor_id,
+                project=project,
+                worker_endpoint_id=worker_endpoint_id,
+                registry_path=self.registry_path,
+            )
+            worker_host_loop = handle.as_dict()
+            self.store.save_checkpoint(
+                proposal_id,
+                step="worker_host_loop_started",
+                receipt={
+                    "outcome": "worker_host_loop_started",
+                    "goal_id": goal_id,
+                    "actor_id": coordination_actor_id,
+                    "worker_endpoint_id": worker_endpoint_id,
+                    "alive": worker_host_loop.get("alive"),
+                },
+            )
         elif first_turn_gate is not None:
             self.store.save_checkpoint(
                 proposal_id,
@@ -924,7 +1010,7 @@ class ChatActionService(
         if heartbeat.get("enabled") is True:
             heartbeat_parameters = {
                 "goal_id": goal_id,
-                "agent_id": agent_id or "codex",
+                "agent_id": agent_id or coordination_actor_id or "codex",
                 "operation": "bind",
                 "cadence": str(heartbeat.get("cadence") or "1d"),
                 "timezone": str(heartbeat.get("timezone") or "UTC"),
@@ -961,11 +1047,24 @@ class ChatActionService(
                     else {}
                 ),
                 **({"agent_id": agent_id} if agent_id else {}),
+                **(
+                    {"actor_id": coordination_actor_id}
+                    if coordination_actor_id
+                    else {}
+                ),
+                **(
+                    {"worker_endpoint_id": worker_endpoint_id}
+                    if worker_endpoint_id
+                    else {}
+                ),
                 **({"todo_ids": todo_ids} if todo_ids else {}),
                 **({"session_id": session_id} if session_id else {}),
                 **({"turn_id": turn_result["turn_id"]} if turn_result else {}),
             },
             **({"child_gate": child_gate} if child_gate else {}),
+            **(
+                {"worker_host_loop": worker_host_loop} if worker_host_loop else {}
+            ),
             "step_receipts": (
                 (self.store.load(proposal_id) or {}).get("checkpoint") or {}
             ).get("steps", {}),

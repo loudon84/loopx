@@ -467,6 +467,10 @@ def collect_history(
             "legacy_runtime_goal": not registry_member,
             "adapter_kind": adapter.get("kind"),
             "adapter_status": adapter.get("status"),
+            "executor_route": meta.get("executor_route") if registry_member else None,
+            "worker_endpoint_id": (
+                meta.get("worker_endpoint_id") if registry_member else None
+            ),
             "coordination": meta.get("coordination") if isinstance(meta.get("coordination"), dict) else None,
             "explore_graph": compact_explore_graph_policy(meta.get("explore_graph"), (meta.get("spawn_policy") or {}).get("explore_harness")) if meta.get("explore_graph") is not None or (meta.get("spawn_policy") or {}).get("explore_harness") else None,
             "spawn_policy": meta.get("spawn_policy") if isinstance(meta.get("spawn_policy"), dict) else None,
